@@ -1,21 +1,21 @@
-name: Gold BTC Swing Scanner
+name: Gold BTC Scalp Scanner
 
 on:
   schedule:
-    - cron: "5 * * * *"      # ทุกชั่วโมง (นาทีที่ 5 หลังปิดแท่ง H1)
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: swing-scanner
+  group: scalp-scanner
   cancel-in-progress: false
 
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 4
 
     steps:
       - name: Checkout
@@ -29,17 +29,16 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements_scanner.txt
 
-      # เก็บ state ข้ามรอบ เพื่อไม่ให้ส่งแจ้งเตือนซ้ำ
-      - name: Restore alert state
+      - name: Restore scalp state
         uses: actions/cache@v4
         with:
-          path: swing_state.json
-          key: swing-state-${{ github.run_id }}
-          restore-keys: swing-state-
+          path: scalp_state.json
+          key: scalp-state-${{ github.run_id }}
+          restore-keys: scalp-state-
 
-      - name: Run swing scanner
+      - name: Run scalp scanner
         env:
           TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
-        run: python swing_scanner.py
+        run: python scalp_scanner.py
