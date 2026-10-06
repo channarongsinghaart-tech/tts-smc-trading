@@ -15,3 +15,12 @@ Setup
 ปรับค่า
 ดูค่าคงที่ด้านบนของ swing_scanner.py (MIN_D1_STRENGTH, H4_ZONE_ATR, TP1_R, COOLDOWN_HOURS ฯลฯ)
 หมายเหตุ: ยังไม่ได้ backtest ค่าเหล่านี้ ควรดูสัญญาณจริงสักพักก่อนใช้เงินจริง
+โหมด Scalp (เล่นสั้น เก็บเร็ว) — scalp_scanner.py
+ทิศยังตาม D1 (ความแรง ≥ 60 และ H1 ต้องไม่ขัด) แต่จุดเข้าใช้ M15 setup + M5 trigger
+M15 setup: pullback เข้า EMA20 / sweep / breakout (ย้อนได้ 1 แท่ง)
+M5 trigger: break / reclaim EMA20 / rejection (ไม่เข้าถ้าราคาห่าง EMA20 เกิน 1.5 ATR = ไล่ราคา)
+SL แคบ (swing 8 แท่ง M5), TP1 = 1R, TP2 = 1.5R, ไม่ถึง TP1 ใน 12 แท่ง M5 ให้ออก
+Cooldown 30 นาที/ทิศ, สูงสุด 6 สัญญาณ/วัน/สินทรัพย์
+Workflow: .github/workflows/gold-btc-scalp-scanner.yml รันทุก 5 นาที (ข้ามช่วง 22:00–06:00 Alberta)
+Credit: D1/H1 แคช 60 นาที, M15 ดึงทุกรอบ, M5 ดึงเฉพาะตอนมี M15 setup ราว 2–4 credits/รอบ — ถ้ารันทั้ง swing และ scalp พร้อมกัน ให้เฝ้าดูโควต้า free plan (800/วัน) ถ้าชนให้เปลี่ยน cron scalp เป็น */10
+ทดสอบ: DRY_RUN=1 TWELVEDATA_API_KEY=... python scalp_scanner.py
