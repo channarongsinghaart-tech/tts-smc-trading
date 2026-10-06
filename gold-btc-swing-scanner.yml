@@ -1,20 +1,19 @@
-name: Gold BTC Scalp Scanner
+name: Gold BTC Swing Scanner
 
 on:
-
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: scalp-scanner
+  group: swing-scanner
   cancel-in-progress: false
 
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 6
 
     steps:
       - name: Checkout
@@ -28,17 +27,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements_scanner.txt
 
-      - name: Restore scalp state
-        uses: actions/cache@v4
-        with:
-          path: scalp_state.json
-          key: scalp-state-${{ github.run_id }}
-          restore-keys: scalp-state-
-
-      - name: Run scalp scanner
+      - name: Run swing scanner
         env:
           DRY_RUN: "1"
           TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
-          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
-          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
-        run: python scalp_scanner.py
+        run: python swing_scanner.py
