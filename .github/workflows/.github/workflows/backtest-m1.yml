@@ -1,22 +1,15 @@
-name: M1 Swing Scanner
+name: Backtest M1 Swing
 
 on:
   workflow_dispatch:
-  # เปิดบรรทัดล่างเมื่อพร้อมให้รันอัตโนมัติทุกชั่วโมง
-  # schedule:
-  #   - cron: "2 * * * *"
 
 permissions:
   contents: read
 
-concurrency:
-  group: m1-swing-scanner
-  cancel-in-progress: false
-
 jobs:
-  scan:
+  backtest:
     runs-on: ubuntu-latest
-    timeout-minutes: 58
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -30,18 +23,19 @@ jobs:
       - name: Install dependencies
         run: pip install numpy pandas requests
 
-      - name: Restore state
-        uses: actions/cache@v4
-        with:
-          path: m1_state.json
-          key: m1-state-${{ github.run_id }}
-          restore-keys: m1-state-
-
-      - name: Run M1 swing scanner
+      - name: Run backtest
         env:
-          DRY_RUN: "1"
-          LOOP_MINUTES: "3"
           TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
-          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
-          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
-        run: python m1_swing_scanner.py
+          WINDOWS: "30"
+          WINDOW_MIN: "120"
+          SEED: "42"
+          M1_PAGES: "2"
+          SPREAD_BTC: "10"
+          SPREAD_XAU: "0.30"
+        run: python backtest_m1.py
+
+      - name: Upload trades
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-trades
+          path: backtest_trades.csv
