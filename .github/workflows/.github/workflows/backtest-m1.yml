@@ -1,1 +1,47 @@
+name: M1 Swing Scanner
 
+on:
+  workflow_dispatch:
+  # เปิดบรรทัดล่างเมื่อพร้อมให้รันอัตโนมัติทุกชั่วโมง
+  # schedule:
+  #   - cron: "2 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m1-swing-scanner
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 58
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install numpy pandas requests
+
+      - name: Restore state
+        uses: actions/cache@v4
+        with:
+          path: m1_state.json
+          key: m1-state-${{ github.run_id }}
+          restore-keys: m1-state-
+
+      - name: Run M1 swing scanner
+        env:
+          DRY_RUN: "1"
+          LOOP_MINUTES: "3"
+          TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+        run: python m1_swing_scanner.py
