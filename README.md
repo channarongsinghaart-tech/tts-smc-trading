@@ -1,2 +1,5 @@
-# tts-smc-trading
-TTS SMC Gold &amp; Bitcoin Trading Analyzer
+streamlit
+numpy
+pandas
+requests
+plotly
