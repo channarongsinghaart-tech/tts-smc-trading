@@ -1,7 +1,7 @@
-"""Backtest กลยุทธ์ MA200 + Market Profile (จุดเข้า M15)
+"""Backtest กลยุทธ์ MA200 + Market Profile (คำนวณจาก D1/H4/H1 จุดเข้า M15)
 
-- ดึง D1 / H4 / M15 จริงจาก Twelve Data ครั้งเดียว แล้วเดินทีละแท่ง M15
-- ใช้เฉพาะแท่งที่ "ปิดแล้ว" ณ เวลานั้น (D1/H4/M15) ไม่แอบดูอนาคต
+- ดึง D1 / H4 / H1 / M15 จริงจาก Twelve Data ครั้งเดียว แล้วเดินทีละแท่ง M15
+- ใช้เฉพาะแท่งที่ "ปิดแล้ว" ณ เวลานั้น (D1/H4/H1/M15) ไม่แอบดูอนาคต
 - เข้าที่ราคาปิดแท่งสัญญาณ ถ้าแท่งเดียวชนทั้ง SL และ TP ถือว่า SL (เข้าข้างร้าย)
 - WINDOWS=0 หมายถึงทดสอบต่อเนื่องทั้งช่วงข้อมูล (ได้จำนวนเทรดมากที่สุด)
 """
@@ -22,7 +22,7 @@ TP1_SHARE = 0.7
 TIME_STOP_BARS = 16
 RUNNER_MAX_BARS = 48
 COOLDOWN_BARS = 4
-WARMUP = 260
+WARMUP = 10
 
 
 def history(symbol, interval, size, pages=1):
@@ -52,9 +52,10 @@ def history(symbol, interval, size, pages=1):
 def load_history(symbol):
     m15 = history(symbol, '15min', 5000, M15_PAGES)
     days = (m15.index[-1] - m15.index[0]).days + 2
+    h1 = history(symbol, '1h', min(5000, days * 24 + 260))
     h4 = history(symbol, '4h', min(5000, days * 6 + 260))
     d1 = history(symbol, '1day', min(5000, days + 260))
-    return d1, h4, m15
+    return d1, h4, h1, m15
 
 
 def simulate(df, i, direction, sig):
@@ -118,15 +119,23 @@ def pick_windows(m15, rng, count, lo_idx):
     return sorted(wins)
 
 
-def run_asset(symbol, d1, h4, m15, rng):
-    d1p, h4p, m15p = st.prep(d1), st.prep(h4), st.prep(m15)
+def gold_closed(ts):
+    """ตลาดทองปิด: เสาร์ทั้งวัน, อาทิตย์ก่อน 22:00 UTC, ศุกร์หลัง 21:00 UTC"""
+    dow, hr = ts.dayofweek, ts.hour
+    return dow == 5 or (dow == 6 and hr < 22) or (dow == 4 and hr >= 21)
+
+
+def run_asset(symbol, d1, h4, h1, m15, rng):
+    d1p, h4p, h1p, m15p = st.prep(d1), st.prep(h4), st.prep(h1), st.prep(m15)
     d1_close = (d1.index.tz_localize(None) + pd.Timedelta(days=1)).values
     h4_close = (h4.index.tz_localize(None) + pd.Timedelta(hours=4)).values
+    h1_close = (h1.index.tz_localize(None) + pd.Timedelta(hours=1)).values
     asof = (m15.index.tz_localize(None) + pd.Timedelta(minutes=15)).values
     dc_all = np.searchsorted(d1_close, asof, side='right')
     hc_all = np.searchsorted(h4_close, asof, side='right')
+    h1c_all = np.searchsorted(h1_close, asof, side='right')
     need = st.SMA_N + st.SLOPE_BARS + 2
-    ok_idx = np.flatnonzero((dc_all >= need) & (hc_all >= need))
+    ok_idx = np.flatnonzero((dc_all >= need) & (hc_all >= need) & (h1c_all >= st.SMA_N + 2))
     if len(ok_idx) == 0:
         return pd.DataFrame(), 0
     lo_idx = max(WARMUP, int(ok_idx[0]))
@@ -140,7 +149,10 @@ def run_asset(symbol, d1, h4, m15, rng):
         for i in range(a, b):
             if i < free_at:
                 continue
-            res = st.decide(d1p.iloc[:dc_all[i]], h4p.iloc[:hc_all[i]], m15p.iloc[:i + 1], fast=True)
+            if symbol == 'XAU/USD' and gold_closed(m15.index[i]):
+                continue
+            res = st.decide(d1p.iloc[:dc_all[i]], h4p.iloc[:hc_all[i]], h1p.iloc[:h1c_all[i]],
+                            m15p.iloc[:i + 1], fast=True)
             sig, dr = res['setup'], res['direction']
             if not sig:
                 continue
@@ -206,9 +218,9 @@ def main():
     parts, total = [], 0
     for name, sym in core.ASSETS.items():
         print(f'[LOAD] {sym}')
-        d1, h4, m15 = load_history(sym)
-        print(f'  M15 {len(m15)} แท่ง {m15.index[0]} → {m15.index[-1]} | H4 {len(h4)} | D1 {len(d1)}')
-        t, nw = run_asset(sym, d1, h4, m15, rng)
+        d1, h4, h1, m15 = load_history(sym)
+        print(f'  M15 {len(m15)} แท่ง {m15.index[0]} → {m15.index[-1]} | H1 {len(h1)} | H4 {len(h4)} | D1 {len(d1)}')
+        t, nw = run_asset(sym, d1, h4, h1, m15, rng)
         parts.append(t)
         total += nw
     all_t = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
