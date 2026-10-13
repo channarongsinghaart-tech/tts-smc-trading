@@ -1,27 +1,30 @@
-"""กลยุทธ์ MA200 + Market Profile (ไฟล์นี้ไม่เรียกอินเทอร์เน็ต มีแต่ตรรกะ)
+"""กลยุทธ์ MA200 + Market Profile — คำนวณจาก D1 / H4 / H1 เท่านั้น ส่วน M15 ใช้เป็นจุดเข้า
 
-ทิศ     : D1 และ H4 ต้องตรงกัน = ราคาอยู่เหนือ/ใต้ SMA200 และ SMA200 ลาดไปทางเดียวกัน
-ช่องเข้า : M15 ราคาย่อ/เด้งมาแตะ "จุดรวม" ของ SMA200(M15) กับระดับ Market Profile
-          (POC / VAH / VAL ของ 3 วันล่าสุด) แล้วมีแท่งยืนยัน
-SMA200 ของ M15 เป็นเส้นหลัก: ซื้อได้เฉพาะตอนราคาอยู่เหนือ ขายได้เฉพาะตอนราคาอยู่ใต้
+D1 + H4 : กำหนดทิศ (ราคาเทียบ SMA200 และ SMA200 ลาดไปทางเดียวกัน ต้องตรงกันทั้งสองกรอบ)
+H1      : สร้าง "ช่องเข้า" = SMA200(H1) + Market Profile (POC/VAH/VAL ของ 3 วันล่าสุด คำนวณจากแท่ง H1)
+          และใช้ ATR(H1) วัดระยะทั้งหมด (ความกว้างช่อง, SL, ระยะไล่ราคา)
+M15     : ใช้แค่ 2 อย่าง = (1) ดูว่าราคาย่อ/เด้งมาแตะช่องแล้วหรือยัง (2) แท่งยืนยันการเข้า
+          ไม่ใช้ M15 คำนวณเส้นหรือโปรไฟล์
 """
 import numpy as np
 import pandas as pd
 
 SMA_N = 200
-SLOPE_BARS = 10                    # ดูความลาด SMA200 ย้อนหลังกี่แท่ง
+SLOPE_BARS = 10                    # ดูความลาด SMA200 ย้อนหลังกี่แท่ง (ของ D1 และ H4)
 PROFILE_DAYS = 3                   # วันที่แสดง (ตรงกับ Market Profile ที่ตั้งไว้)
 PROFILE_MODE = 'DAY'               # 'DAY' = รายวัน | 'SESSION' = แยก Asia/EU/US
 SESSION_START = {'ASIA': 0, 'EU': 8, 'US': 14}   # ชั่วโมงเริ่มเซสชัน (เวลา UTC)
 VALUE_AREA = 0.70
-BINS_PER_ATR = 5
-MIN_GROUP_BARS = 8
-ZONE_TOL_ATR = 0.35
+BINS_PER_ATR = 6
+MIN_GROUP_BARS = 4                 # จำนวนแท่ง H1 ขั้นต่ำต่อโปรไฟล์
+ZONE_TOL_ATR = 0.20                # ความกว้างช่อง (หน่วย ATR ของ H1)
+PIERCE_ATR = 0.5                   # ราคาทะลุช่องได้ไม่เกินเท่านี้ (ATR ของ H1)
+TOUCH_BARS = 4                     # M15 ย้อนหลังกี่แท่งที่นับว่า "แตะช่อง"
 MIN_CONFLUENCE = 2                 # ต้องมีระดับรวมกันอย่างน้อยกี่เส้น (นับ SMA200 ด้วย)
-ALLOW_SMA200_ALONE = True          # แตะ SMA200 เส้นเดียวก็เข้าได้
-MAX_CHASE_ATR = 1.2
-SL_BUFFER_ATR = 0.3
-MIN_RISK_ATR, MAX_RISK_ATR = 0.7, 3.5
+ALLOW_SMA200_ALONE = True          # แตะ SMA200(H1) เส้นเดียวก็เข้าได้
+MAX_CHASE_ATR = 0.6                # ปิดห่างช่องเกินเท่านี้ (ATR ของ H1) = ไล่ราคา
+SL_BUFFER_ATR = 0.15
+MIN_RISK_ATR, MAX_RISK_ATR = 0.3, 1.8
 TP1_R = 1.0
 TP2_MIN_R, TP2_MAX_R, TP2_FALLBACK_R = 1.5, 3.5, 2.0
 
@@ -67,7 +70,7 @@ def direction(d1, h4):
     return None, info
 
 
-# ---------------- Market Profile (TPO) ----------------
+# ---------------- Market Profile (TPO จากแท่ง H1) ----------------
 def tpo_levels(df, step):
     lo = float(df.low.min())
     hi = float(df.high.max())
@@ -104,10 +107,10 @@ def _session_of(hour):
     return 'ASIA'
 
 
-def profile_levels(m15):
-    atr = max(float(m15.ATR.iloc[-1]), 1e-9)
+def profile_levels(h1):
+    atr = max(float(h1.ATR.iloc[-1]), 1e-9)
     step = atr / BINS_PER_ATR
-    tail = m15.iloc[-(PROFILE_DAYS + 1) * 100:]
+    tail = h1.iloc[-(PROFILE_DAYS + 1) * 30:]
     dates = np.array(tail.index.date)
     days = sorted(set(dates))[-PROFILE_DAYS:]
     day_names = ['วันนี้', 'เมื่อวาน', '2 วันก่อน', '3 วันก่อน']
@@ -131,8 +134,9 @@ def profile_levels(m15):
     return levels
 
 
-# ---------------- ช่องเข้า M15 ----------------
+# ---------------- จุดเข้า: M15 ----------------
 def confirm_candle(x, long):
+    """แท่ง M15 ยืนยัน (สัดส่วนตัวแท่ง/ไส้เทียน ไม่ใช้ ATR ของ M15)"""
     rng = max(float(x.range), 1e-9)
     c = float(x.close)
     if long:
@@ -144,51 +148,54 @@ def confirm_candle(x, long):
     return bool(body or rej)
 
 
-def m15_setup(m15, direction, levels):
-    if len(m15) < SMA_N + 5:
-        return None, 'ข้อมูล M15 ไม่พอ'
-    x = m15.iloc[-1]
-    atr = max(float(x.ATR), 1e-9)
-    sma, c = float(x.SMA), float(x.close)
+def entry_setup(h1, m15, direction, levels):
+    if len(h1) < SMA_N + 2 or len(m15) < TOUCH_BARS:
+        return None, 'ข้อมูลไม่พอ'
+    x1 = h1.iloc[-1]
+    atr, sma = max(float(x1.ATR), 1e-9), float(x1.SMA)
+    if np.isnan(sma):
+        return None, 'ข้อมูล H1 ไม่พอสำหรับ SMA200'
+    xm = m15.iloc[-1]
+    c = float(xm.close)
     long = direction == 'LONG'
     if (long and c < sma) or ((not long) and c > sma):
-        return None, 'ราคา M15 อยู่ผิดฝั่งของ SMA200'
+        return None, 'ราคาอยู่ผิดฝั่งของ SMA200(H1)'
     tol = ZONE_TOL_ATR * atr
-    pts = [(lv['name'], lv['price']) for lv in levels] + [('SMA200', sma)]
-    recent = m15.iloc[-3:]
+    pts = [(lv['name'], lv['price']) for lv in levels] + [('SMA200 H1', sma)]
+    recent = m15.iloc[-TOUCH_BARS:]
     ext_low, ext_high = float(recent.low.min()), float(recent.high.max())
 
     best = None
     for name, p in pts:
         if long:
-            if p < sma - 0.3 * atr or p > c:
+            if p < sma - 0.15 * atr or p > c:
                 continue
-            touched = (ext_low <= p + tol) and (ext_low >= p - atr)
+            touched = (ext_low <= p + tol) and (ext_low >= p - PIERCE_ATR * atr)
         else:
-            if p > sma + 0.3 * atr or p < c:
+            if p > sma + 0.15 * atr or p < c:
                 continue
-            touched = (ext_high >= p - tol) and (ext_high <= p + atr)
+            touched = (ext_high >= p - tol) and (ext_high <= p + PIERCE_ATR * atr)
         if not touched:
             continue
         cluster = [(n, q) for n, q in pts if abs(q - p) <= 1.3 * tol]
         score = len(cluster)
-        if score < MIN_CONFLUENCE and not (ALLOW_SMA200_ALONE and name == 'SMA200'):
+        if score < MIN_CONFLUENCE and not (ALLOW_SMA200_ALONE and name == 'SMA200 H1'):
             continue
         key = (score, -abs(c - p))
         if best is None or key > best['key']:
             best = {'key': key, 'price': p, 'cluster': cluster, 'score': score}
     if best is None:
-        return None, 'ยังไม่มีช่องเข้า (ราคาไม่ได้แตะจุดรวม SMA200/Market Profile)'
+        return None, 'ยังไม่มีช่องเข้า (ราคาไม่ได้แตะจุดรวม SMA200/Market Profile ของ H1)'
 
     p = best['price']
     held = c > p if long else c < p
     if not held:
         return None, 'ราคายังไม่ยืนเหนือ/ใต้ช่องเข้า'
-    if not confirm_candle(x, long):
-        return None, 'รอแท่งยืนยัน'
+    if not confirm_candle(xm, long):
+        return None, 'รอแท่ง M15 ยืนยัน'
     ext = (c - p) / atr if long else (p - c) / atr
     if ext > MAX_CHASE_ATR:
-        return None, f'ไล่ราคา ({ext:.1f} ATR จากช่องเข้า)'
+        return None, f'ไล่ราคา ({ext:.2f} ATR(H1) จากช่องเข้า)'
 
     prices = [q for _, q in best['cluster']]
     zone_lo, zone_hi = min(prices), max(prices)
@@ -199,7 +206,7 @@ def m15_setup(m15, direction, levels):
         sl = max(ext_high, zone_hi) + SL_BUFFER_ATR * atr
         risk = sl - c
     if not (MIN_RISK_ATR * atr <= risk <= MAX_RISK_ATR * atr):
-        return None, f'risk นอกช่วง ({risk / atr:.1f} ATR)'
+        return None, f'risk นอกช่วง ({risk / atr:.2f} ATR(H1))'
     s = 1 if long else -1
     tp1 = c + s * TP1_R * risk
     ahead = sorted([q for n, q in pts[:-1]
@@ -210,21 +217,23 @@ def m15_setup(m15, direction, levels):
             'names': ' + '.join(n for n, _ in best['cluster'])}, 'ok'
 
 
-def decide(d1p, h4p, m15p, fast=False):
-    """d1p/h4p/m15p = ผลของ prep() เฉพาะแท่งที่ปิดแล้ว fast=True ข้ามการคำนวณโปรไฟล์ถ้ายังไม่มีแท่งยืนยัน"""
+def decide(d1p, h4p, h1p, m15p, fast=False):
+    """ทุกอาร์กิวเมนต์ = ผลของ prep() เฉพาะแท่งที่ปิดแล้ว
+    fast=True ข้ามการคำนวณโปรไฟล์ถ้ายังไม่มีแท่ง M15 ยืนยัน (ใช้ตอน Backtest)"""
     dr, info = direction(d1p, h4p)
     out = {'direction': dr, 'info': info, 'levels': [], 'setup': None}
     if not dr:
         out['why'] = f'D1 {info["d1"]} / H4 {info["h4"]} ไม่ตรงกัน จึงยังไม่เล่น'
         return out
     if fast:
-        x = m15p.iloc[-1]
         long = dr == 'LONG'
-        sma, c = float(x.SMA), float(x.close)
-        if np.isnan(sma) or (long and c < sma) or ((not long) and c > sma) or not confirm_candle(x, long):
-            out['why'] = 'ยังไม่มีแท่งยืนยัน/อยู่ผิดฝั่ง SMA200'
+        sma = float(h1p.SMA.iloc[-1])
+        c = float(m15p.close.iloc[-1])
+        if np.isnan(sma) or (long and c < sma) or ((not long) and c > sma) \
+                or not confirm_candle(m15p.iloc[-1], long):
+            out['why'] = 'ยังไม่มีแท่ง M15 ยืนยัน/อยู่ผิดฝั่ง SMA200(H1)'
             return out
-    levels = profile_levels(m15p)
-    sig, why = m15_setup(m15p, dr, levels)
+    levels = profile_levels(h1p)
+    sig, why = entry_setup(h1p, m15p, dr, levels)
     out.update(levels=levels, setup=sig, why=why)
     return out
