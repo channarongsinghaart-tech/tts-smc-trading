@@ -1,18 +1,17 @@
-"""แอป M1 Swing (Streamlit): แท็บสแกนสด + แท็บ Backtest"""
+"""แอป MA200 + Market Profile (Streamlit): แท็บสแกนสด + แท็บ Backtest"""
 import os
 import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 
-import m1_swing_scanner as s
-import backtest_m1 as bt
+import m1_swing_scanner as core
+import ma200_strategy as strat
+import backtest_ma200 as bt
 
-st.set_page_config(page_title='M1 Swing', page_icon='⚡', layout='centered')
-st.title('⚡ M1 Swing')
-st.caption('D1 แท่งก่อนหน้า = ตัวกรองทิศ | H1 = ตัวหลัก (โซน) | M1 = จุดเข้า')
-
-s.CREDIT_BUDGET = 10 ** 9      # ในแอปคุมโดยกดเอง ไม่ใช้งบรายวันของสแกนเนอร์
+st.set_page_config(page_title='MA200 + Market Profile', page_icon='📈', layout='centered')
+st.title('📈 MA200 + Market Profile')
+st.caption('ทิศ: D1 + H4 เทียบ SMA200 | ช่องเข้า: M15 (SMA200 + POC/VAH/VAL ของ 3 วันล่าสุด)')
 
 
 def get_key():
@@ -31,86 +30,104 @@ KEY = get_key()
 if not KEY:
     st.info('ใส่ API key (หรือตั้ง TWELVEDATA_API_KEY ใน Streamlit secrets) เพื่อเริ่มใช้งาน')
     st.stop()
-s.API_KEY = KEY
+core.API_KEY = KEY
 
 
 # ---------------- สแกนสด ----------------
 def scan_live(symbol):
-    d1 = s.d1_prev_bias(s.fetch(symbol, '1day', 3))
-    h1 = s.ind(s.fetch(symbol, '1h', 120))
-    ctx, why = s.h1_context(h1, d1)
-    m1 = s.ind(s.fetch(symbol, '1min', 300, kind='m1'))
-    sig, sig_why = (None, 'ยังไม่อยู่ในโซน H1')
-    if ctx and ctx['armed']:
-        sig, sig_why = s.m1_signal(m1, ctx)
-    elif not ctx:
-        sig_why = why
-    return d1, ctx, why, m1, sig, sig_why
+    d1 = strat.prep(core.fetch(symbol, '1day', 300))
+    h4 = strat.prep(core.fetch(symbol, '4h', 300))
+    m15 = strat.prep(core.fetch(symbol, '15min', 500))
+    res = strat.decide(d1, h4, m15, fast=False)
+    if not res['levels']:
+        res['levels'] = strat.profile_levels(m15)
+    return res, m15
 
 
-def live_chart(m1, ctx, sig):
-    d = m1.tail(120)
-    fig = go.Figure(go.Candlestick(x=d.index, open=d.open, high=d.high, low=d.low, close=d.close))
-    if ctx:
-        fig.add_hrect(y0=ctx['lo'], y1=ctx['hi'], fillcolor='orange', opacity=0.18, line_width=0)
+def live_chart(m15, res):
+    d = m15.tail(150)
+    fig = go.Figure(go.Candlestick(x=d.index, open=d.open, high=d.high, low=d.low, close=d.close, name='M15'))
+    fig.add_trace(go.Scatter(x=d.index, y=d.SMA, mode='lines', name='SMA200',
+                             line=dict(color='red', width=2)))
+    lo, hi = float(d.low.min()), float(d.high.max())
+    colors = {'POC': 'gold', 'VAH': 'deepskyblue', 'VAL': 'violet'}
+    for lv in res['levels']:
+        if lo <= lv['price'] <= hi:
+            fig.add_hline(y=lv['price'], line_color=colors[lv['kind']], line_dash='dot', line_width=1)
+    sig = res['setup']
     if sig:
         for name, y, color in (('Entry', sig['entry'], 'white'), ('SL', sig['sl'], 'red'),
                                ('TP1', sig['tp1'], 'lime'), ('TP2', sig['tp2'], 'green')):
-            fig.add_hline(y=y, line_color=color, line_dash='dot', annotation_text=name)
-    fig.update_layout(height=380, margin=dict(l=0, r=0, t=10, b=0), xaxis_rangeslider_visible=False)
+            fig.add_hline(y=y, line_color=color, line_width=2, annotation_text=name)
+    fig.update_layout(height=420, margin=dict(l=0, r=0, t=10, b=0), xaxis_rangeslider_visible=False,
+                      legend=dict(orientation='h'))
     return fig
 
 
 tab_live, tab_bt = st.tabs(['📡 สแกนสด', '🧪 Backtest'])
 
 with tab_live:
-    name = st.selectbox('สินทรัพย์', list(s.ASSETS.keys()))
+    name = st.selectbox('สินทรัพย์', list(core.ASSETS.keys()))
     if st.button('สแกนตอนนี้', use_container_width=True, key='scan'):
         try:
-            with st.spinner('กำลังดึงข้อมูล D1 / H1 / M1 ...'):
-                d1, ctx, why, m1, sig, sig_why = scan_live(s.ASSETS[name])
-            st.write(f'**D1 แท่งก่อนหน้า:** {d1["bias"]}  (PDH {s.fmt(d1["pdh"])} / PDL {s.fmt(d1["pdl"])})')
-            if ctx:
-                st.write(f'**H1:** {ctx["mode"]} → ทิศ **{ctx["direction"]}** | โซน {s.fmt(ctx["lo"])} - {s.fmt(ctx["hi"])} '
-                         f'| {"✅ ราคาใกล้โซน" if ctx["armed"] else "⏳ ราคายังไกลโซน"}')
+            with st.spinner('กำลังดึงข้อมูล D1 / H4 / M15 ...'):
+                res, m15 = scan_live(core.ASSETS[name])
+            info = res['info']
+            st.write(f'**D1:** {info["d1"]} ({info["d1_note"]})')
+            st.write(f'**H4:** {info["h4"]} ({info["h4_note"]})')
+            x = m15.iloc[-1]
+            st.write(f'**M15 แท่งล่าสุด:** {m15.index[-1]:%d %b %H:%M} UTC | ราคา {core.fmt(float(x.close))} '
+                     f'| SMA200 {core.fmt(float(x.SMA))}')
+            if res['direction']:
+                st.write(f'**ทิศที่เล่นได้:** {"🟢 LONG" if res["direction"] == "LONG" else "🔴 SHORT"}')
             else:
-                st.write(f'**H1:** ไม่เล่น — {why}')
-            st.write(f'**M1 แท่งล่าสุด:** {m1.index[-1]:%H:%M} UTC | ราคา {s.fmt(float(m1.close.iloc[-1]))}')
+                st.write('**ทิศที่เล่นได้:** ยังไม่มี (D1 กับ H4 ไม่ตรงกัน)')
+            sig = res['setup']
             if sig:
-                st.success(f'⚡ สัญญาณ {ctx["direction"]}  Entry {s.fmt(sig["entry"])} | SL {s.fmt(sig["sl"])} | '
-                           f'TP1 {s.fmt(sig["tp1"])} | TP2 {s.fmt(sig["tp2"])}')
+                st.success(f'⚡ สัญญาณ {res["direction"]} ที่ช่อง {sig["names"]}\n\n'
+                           f'Entry {core.fmt(sig["entry"])} | SL {core.fmt(sig["sl"])} | '
+                           f'TP1 {core.fmt(sig["tp1"])} | TP2 {core.fmt(sig["tp2"])}')
             else:
-                st.warning(f'ยังไม่มีสัญญาณ: {sig_why}')
-            st.plotly_chart(live_chart(m1, ctx, sig), use_container_width=True)
+                st.warning(f'ยังไม่มีสัญญาณ: {res["why"]}')
+            st.plotly_chart(live_chart(m15, res), use_container_width=True)
+            if res['levels']:
+                lv = pd.DataFrame(res['levels']).sort_values('price', ascending=False)
+                st.write('**ระดับ Market Profile (ล่าสุด)**')
+                st.dataframe(lv[['name', 'price']], use_container_width=True, hide_index=True)
         except Exception as e:
             st.error(f'ดึงข้อมูลไม่สำเร็จ: {e}')
 
 
 # ---------------- Backtest ----------------
 @st.cache_data(ttl=3600, show_spinner=False)
-def cached_history(symbol, key):
-    s.API_KEY = key
+def cached_history(symbol, key, pages):
+    core.API_KEY = key
+    bt.M15_PAGES = int(pages)
     return bt.load_history(symbol)
 
 
 with tab_bt:
-    st.caption('สุ่มช่วงย้อนหลังช่วงละ 2 ชม. ใช้ข้อมูลจริงจาก Twelve Data (~8 credits, ครั้งแรกอาจรอ 1-2 นาที)')
-    n_win = st.slider('จำนวนช่วงต่อสินทรัพย์', 10, 80, 30, step=5)
-    seed = st.number_input('seed (เปลี่ยนเพื่อสุ่มชุดใหม่)', value=42, step=1)
-    sp_btc = st.number_input('สเปรด BTC (หน่วยราคา)', value=10.0, step=1.0)
+    st.caption('ใช้ข้อมูลจริงจาก Twelve Data | credits ≈ 2×(หน้า M15 + 2) ครั้ง')
+    pages = st.slider('ข้อมูล M15 ย้อนหลัง (หน้าละ 5,000 แท่ง ≈ 52 วันของ BTC)', 1, 4, 2)
+    full = st.checkbox('ทดสอบต่อเนื่องทั้งช่วงข้อมูล (ได้เทรดมากที่สุด)', value=True)
+    n_win = st.slider('จำนวนช่วงสุ่มต่อสินทรัพย์ (ใช้เมื่อไม่ติ๊กข้างบน)', 10, 150, 60, step=10)
+    hours = st.slider('ความยาวแต่ละช่วงสุ่ม (ชั่วโมง)', 6, 72, 24, step=6)
+    seed = st.number_input('seed', value=42, step=1)
+    sp_btc = st.number_input('สเปรด BTC (หน่วยราคา)', value=6.4, step=0.5)
     sp_xau = st.number_input('สเปรดทอง (หน่วยราคา)', value=0.30, step=0.05)
     if st.button('รัน Backtest', use_container_width=True, key='bt'):
         try:
-            bt.WINDOWS, bt.SEED = int(n_win), int(seed)
+            bt.WINDOWS = 0 if full else int(n_win)
+            bt.WINDOW_HOURS, bt.SEED = int(hours), int(seed)
             bt.SPREAD['BTC/USD'], bt.SPREAD['XAU/USD'] = float(sp_btc), float(sp_xau)
             rng = np.random.default_rng(int(seed))
             parts, total = [], 0
             bar = st.progress(0.0, text='เริ่ม...')
-            for k, (nm, sym) in enumerate(s.ASSETS.items()):
-                bar.progress(k / len(s.ASSETS), text=f'ดึงข้อมูล {sym} ...')
-                d1, h1, m1 = cached_history(sym, KEY)
-                bar.progress((k + 0.5) / len(s.ASSETS), text=f'จำลองเทรด {sym} ...')
-                t, nw = bt.run_asset(sym, d1, h1, m1, rng)
+            for k, (nm, sym) in enumerate(core.ASSETS.items()):
+                bar.progress(k / len(core.ASSETS), text=f'ดึงข้อมูล {sym} ...')
+                d1, h4, m15 = cached_history(sym, KEY, pages)
+                bar.progress((k + 0.5) / len(core.ASSETS), text=f'จำลองเทรด {sym} ...')
+                t, nw = bt.run_asset(sym, d1, h4, m15, rng)
                 parts.append(t)
                 total += nw
             bar.progress(1.0, text='เสร็จแล้ว')
