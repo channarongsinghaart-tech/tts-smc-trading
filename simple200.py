@@ -22,7 +22,9 @@ PULL_TOL_ATR = 0.2            # ระยะที่นับว่า "แต�
 MAX_HOLD_H1 = 24 * 15         # ถือนานสุด 15 วัน
 TEST_FRAC = 0.3               # 30% ท้ายของช่วงเวลาเก็บไว้ทดสอบ
 SPREAD = {'BTC/USD': 6.4, 'XAU/USD': 0.30}
-SWAP_PCT_DAY = {'BTC/USD': 0.0, 'XAU/USD': 0.0}   # ค่าข้ามคืน % ของราคาต่อวัน (ใส่ตามโบรกเกอร์)
+# ค่าข้ามคืน (% ของราคาต่อวัน) แยกฝั่งซื้อ/ขาย ค่าบวก = เสียเงิน (ใส่ตามโบรกเกอร์)
+# ทอง Exness (XAUUSDm, ต.ค. 2026): Swap long -515.5 จุด = 0.5155 USD/oz ต่อคืน ≈ 0.0124% ของราคา, Swap short 0
+SWAP_PCT_DAY = {'BTC/USD': {'LONG': 0.0, 'SHORT': 0.0}, 'XAU/USD': {'LONG': 0.0124, 'SHORT': 0.0}}
 ENTRY_NAMES = {'cross': 'H1 ข้ามเส้น 200', 'pullback': 'H1 ย่อแตะเส้น 200'}
 EXIT_NAMES = {'tp': 'TP 2R', 'trend': 'ออกเมื่อ H4 กลับฝั่ง'}
 DEV, TEST = 'พัฒนา', 'ทดสอบ'
@@ -161,12 +163,14 @@ def run(symbol, d1, h4, h1, entry='cross', exit_mode='trend'):
         entry_px = float(h1p.close.values[i])
         j, px, why = simulate(h1p, i, s, risk, exit_mode, h4s, hc)
         days = (idx[j] - idx[i]).total_seconds() / 86400
-        cost = SPREAD[symbol] / risk + entry_px * SWAP_PCT_DAY[symbol] / 100 * days / risk
+        side = 'LONG' if s == 1 else 'SHORT'
+        swap_r = entry_px * SWAP_PCT_DAY[symbol][side] / 100 * days / risk
+        cost = SPREAD[symbol] / risk + swap_r
         r = s * (px - entry_px) / risk
         trades.append({'symbol': symbol, 'time': idx[i], 'period': DEV if idx[i] < cut else TEST,
-                       'dir': 'LONG' if s == 1 else 'SHORT', 'entry': entry_px, 'exit': float(px),
+                       'dir': side, 'entry': entry_px, 'exit': float(px), 'risk': risk,
                        'exit_time': idx[j], 'result': why, 'days': days,
-                       'R_gross': r, 'R_net': r - cost})
+                       'R_gross': r, 'swap_R': swap_r, 'R_net': r - cost})
         free = j + 1
     return pd.DataFrame(trades)
 
