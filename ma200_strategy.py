@@ -148,31 +148,32 @@ def confirm_candle(x, long):
     return bool(body or rej)
 
 
-def entry_setup(h1, m15, direction, levels):
+def entry_setup(h1, m15, direction, levels, use_sma=True):
+    """use_sma=False ใช้เฉพาะตอนทดสอบแยกส่วน (ไม่ใช้ SMA200 H1 ทั้งกฎฝั่งราคาและเป็นช่องเข้า)"""
     if len(h1) < SMA_N + 2 or len(m15) < TOUCH_BARS:
         return None, 'ข้อมูลไม่พอ'
     x1 = h1.iloc[-1]
     atr, sma = max(float(x1.ATR), 1e-9), float(x1.SMA)
-    if np.isnan(sma):
+    if use_sma and np.isnan(sma):
         return None, 'ข้อมูล H1 ไม่พอสำหรับ SMA200'
     xm = m15.iloc[-1]
     c = float(xm.close)
     long = direction == 'LONG'
-    if (long and c < sma) or ((not long) and c > sma):
+    if use_sma and ((long and c < sma) or ((not long) and c > sma)):
         return None, 'ราคาอยู่ผิดฝั่งของ SMA200(H1)'
     tol = ZONE_TOL_ATR * atr
-    pts = [(lv['name'], lv['price']) for lv in levels] + [('SMA200 H1', sma)]
+    pts = [(lv['name'], lv['price']) for lv in levels] + ([('SMA200 H1', sma)] if use_sma else [])
     recent = m15.iloc[-TOUCH_BARS:]
     ext_low, ext_high = float(recent.low.min()), float(recent.high.max())
 
     best = None
     for name, p in pts:
         if long:
-            if p < sma - 0.15 * atr or p > c:
+            if (use_sma and p < sma - 0.15 * atr) or p > c:
                 continue
             touched = (ext_low <= p + tol) and (ext_low >= p - PIERCE_ATR * atr)
         else:
-            if p > sma + 0.15 * atr or p < c:
+            if (use_sma and p > sma + 0.15 * atr) or p < c:
                 continue
             touched = (ext_high >= p - tol) and (ext_high <= p + PIERCE_ATR * atr)
         if not touched:
@@ -209,7 +210,7 @@ def entry_setup(h1, m15, direction, levels):
         return None, f'risk นอกช่วง ({risk / atr:.2f} ATR(H1))'
     s = 1 if long else -1
     tp1 = c + s * TP1_R * risk
-    ahead = sorted([q for n, q in pts[:-1]
+    ahead = sorted([q for n, q in (pts[:-1] if use_sma else pts)
                     if TP2_MIN_R * risk <= s * (q - c) <= TP2_MAX_R * risk], key=lambda q: s * (q - c))
     tp2 = ahead[0] if ahead else c + s * TP2_FALLBACK_R * risk
     return {'entry': c, 'sl': sl, 'tp1': tp1, 'tp2': tp2, 'risk': risk, 'atr': atr,
