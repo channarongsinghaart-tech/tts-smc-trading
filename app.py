@@ -123,7 +123,7 @@ with tab_bt:
             bt.WINDOW_HOURS, bt.SEED = int(hours), int(seed)
             bt.SPREAD['BTC/USD'], bt.SPREAD['XAU/USD'] = float(sp_btc), float(sp_xau)
             rng = np.random.default_rng(int(seed))
-            parts, total = [], 0
+            parts, dirs, total = [], [], 0
             bar = st.progress(0.0, text='เริ่ม...')
             for k, (nm, sym) in enumerate(core.ASSETS.items()):
                 bar.progress(k / len(core.ASSETS), text=f'ดึงข้อมูล {sym} ...')
@@ -131,11 +131,27 @@ with tab_bt:
                 bar.progress((k + 0.5) / len(core.ASSETS), text=f'จำลองเทรด {sym} ...')
                 t, nw = bt.run_asset(sym, d1, h4, h1, m15, rng)
                 parts.append(t)
+                dirs.append(bt.direction_study(sym, d1, h4, m15))
                 total += nw
             bar.progress(1.0, text='เสร็จแล้ว')
             all_t = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
             st.markdown(bt.report(all_t, total))
             if len(all_t):
+                with st.expander('🔬 วิเคราะห์เชิงลึก (ช่วงพัฒนา 70% แรก / ช่วงทดสอบ 30% หลัง)'):
+                    st.write('**1) ทิศจาก D1+H4 ถูกแค่ไหน (วัดทุกแท่ง H4, ดู 24 ชม. ถัดไป)**')
+                    st.caption('ทิศถูก % ต้องสูงกว่าฐานสุ่ม % ทั้งสองช่วง ถึงจะถือว่าทิศมีประโยชน์')
+                    st.dataframe(bt.direction_report(pd.concat(dirs, ignore_index=True)),
+                                 use_container_width=True, hide_index=True)
+                    st.write('**2) หลังเข้าเทรด ราคาไปทางเรา (MFE) / สวนเรา (MAE) แค่ไหนใน 4 ชม.**')
+                    st.caption('หน่วย R = ระยะ SL ของกลยุทธ์ ใช้ดูว่า SL/TP วางห่างพอดีไหม')
+                    st.dataframe(bt.excursion_report(all_t), use_container_width=True, hide_index=True)
+                    st.write('**3) ลองเปลี่ยน SL/TP กับจุดเข้าเดิม**')
+                    st.caption('ชนะ % สูงไม่ได้แปลว่ากำไร ดูที่ R สุทธิ ต้องเป็นบวกทั้งสองช่วง '
+                               'และจำไว้ว่าลองหลายแบบ ย่อมมีบางแบบดูดีโดยบังเอิญ')
+                    st.dataframe(bt.grid_report(all_t), use_container_width=True, hide_index=True)
+                    st.write('**4) ตัวชี้วัดสภาพตลาด ณ จุดเข้า (แบ่ง 3 กลุ่มตามช่วงพัฒนา)**')
+                    st.caption('เชื่อได้เฉพาะแถว ✓/✗ ที่ชัดทั้งสองช่วง แถว "ไม่ชัด" หรือ "ข้อมูลน้อย" ห้ามเอาไปตั้งกฎ')
+                    st.dataframe(bt.feature_report(all_t), use_container_width=True, hide_index=True)
                 st.write('**กราฟกำไรสะสม (หน่วย R หักต้นทุน)**')
                 st.line_chart(all_t.sort_values('time').R_net.cumsum().reset_index(drop=True))
                 st.dataframe(all_t, use_container_width=True)
