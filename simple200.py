@@ -21,10 +21,27 @@ TP_R = 2.0
 PULL_TOL_ATR = 0.2            # ระยะที่นับว่า "แตะเส้น" (ATR ของ H1)
 MAX_HOLD_H1 = 24 * 15         # ถือนานสุด 15 วัน
 TEST_FRAC = 0.3               # 30% ท้ายของช่วงเวลาเก็บไว้ทดสอบ
+ROLLOVER_BAR_HOUR = 20        # โหมดไม่ข้ามคืน: ปิดตอนแท่ง H1 20:00-21:00 UTC ปิด (ก่อนตัดรอบ swap)
+NO_ENTRY_FROM_HOUR = 18       # โหมดไม่ข้ามคืน: ไม่เปิดไม้ใหม่ตั้งแต่แท่ง 18:00 UTC
 SPREAD = {'BTC/USD': 6.4, 'XAU/USD': 0.30}
-# ค่าข้ามคืน (% ของราคาต่อวัน) แยกฝั่งซื้อ/ขาย ค่าบวก = เสียเงิน (ใส่ตามโบรกเกอร์)
+# ค่าข้ามคืน (% ของราคาต่อคืน) แยกฝั่งซื้อ/ขาย ค่าบวก = เสียเงิน (ใส่ตามโบรกเกอร์)
 # ทอง Exness (XAUUSDm, ต.ค. 2026): Swap long -515.5 จุด = 0.5155 USD/oz ต่อคืน ≈ 0.0124% ของราคา, Swap short 0
 SWAP_PCT_DAY = {'BTC/USD': {'LONG': 0.0, 'SHORT': 0.0}, 'XAU/USD': {'LONG': 0.0124, 'SHORT': 0.0}}
+ROLLOVER_HOUR_UTC = 21        # เวลาตัดรอบคิด swap (โดยประมาณ)
+# จำนวนเท่าที่คิด swap ในแต่ละคืน จันทร์..อาทิตย์ (ทองตามตาราง Exness: พุธ 3 เท่า, เสาร์-อาทิตย์ไม่คิด)
+SWAP_DAYS = {'XAU/USD': (1, 1, 3, 1, 1, 0, 0), 'BTC/USD': (1, 1, 1, 1, 1, 1, 1)}
+
+
+def rollover_units(symbol, t_in, t_out):
+    """นับจำนวนครั้งที่ถือผ่านเวลาตัดรอบ (ถ่วงวันพุธ 3 เท่า) ระหว่างเปิดถึงปิดไม้"""
+    t = t_in.normalize() + pd.Timedelta(hours=ROLLOVER_HOUR_UTC)
+    if t <= t_in:
+        t += pd.Timedelta(days=1)
+    units = 0
+    while t < t_out:
+        units += SWAP_DAYS[symbol][t.dayofweek]
+        t += pd.Timedelta(days=1)
+    return units
 ENTRY_NAMES = {'cross': 'H1 ข้ามเส้น 200', 'pullback': 'H1 ย่อแตะเส้น 200'}
 EXIT_NAMES = {'tp': 'TP 2R', 'trend': 'ออกเมื่อ H4 กลับฝั่ง'}
 DEV, TEST = 'พัฒนา', 'ทดสอบ'
@@ -111,12 +128,19 @@ def signals(h1p, d1s, h4s, entry):
 
 
 # ---------------- จำลองเทรด ----------------
-def simulate(h1p, i, s, risk, exit_mode, h4s, hc):
+def simulate(h1p, i, s, risk, exit_mode, h4s, hc, max_hold=None, tp_r=None, intraday=False):
+    """max_hold = ชั่วโมงตามเวลาจริง (None = แบบเดิม: 15 วันนับเป็นแท่ง)
+    ถ้าจำกัดเวลาถือหรือโหมดไม่ข้ามคืน จะปิดก่อนตลาดหยุด (เช่น ทองก่อนเสาร์-อาทิตย์) ด้วย"""
     op, hi, lo, cl = h1p.open.values, h1p.high.values, h1p.low.values, h1p.close.values
     n = len(cl)
     entry = cl[i]
-    sl, tp = entry - s * risk, entry + s * TP_R * risk
+    tp_r = TP_R if tp_r is None else tp_r
+    sl, tp = entry - s * risk, entry + s * tp_r * risk
     last = min(n - 1, i + MAX_HOLD_H1)
+    hours = h1p.index.hour
+    tns = h1p.index.as_unit('ns').asi8           # บังคับหน่วยนาโนวินาที (pandas 3 อาจใช้ไมโครวินาที)
+    hour_ns = 3_600_000_000_000
+    guard_gap = intraday or max_hold is not None
     for j in range(i + 1, last + 1):
         if s == 1:                                         # SL ก่อนเสมอ (เข้าข้างร้าย) และคิดราคาเปิดที่กระโดดข้าม
             if op[j] <= sl:
@@ -139,10 +163,16 @@ def simulate(h1p, i, s, risk, exit_mode, h4s, hc):
                 return j, tp, 'TP'
         elif hc[j] != hc[j - 1] and h4s[j] == -s:          # แท่ง H4 เพิ่งปิด และกลับฝั่งเส้น 200
             return j, cl[j], 'H4 กลับฝั่ง'
+        if intraday and hours[j] == ROLLOVER_BAR_HOUR:      # ปิดก่อนตัดรอบ swap (แท่ง 20:00-21:00 UTC)
+            return j, cl[j], 'ปิดก่อนข้ามคืน'
+        if max_hold is not None and (tns[j] - tns[i]) / hour_ns >= max_hold:
+            return j, cl[j], 'หมดเวลา'
+        if guard_gap and j + 1 < n and (tns[j + 1] - tns[j]) > 6 * hour_ns:
+            return j, cl[j], 'ปิดก่อนตลาดหยุด'
     return last, cl[last], 'หมดเวลา' if last < n - 1 else 'จบข้อมูล'
 
 
-def run(symbol, d1, h4, h1, entry='cross', exit_mode='trend'):
+def run(symbol, d1, h4, h1, entry='cross', exit_mode='trend', max_hold=None, tp_r=None, intraday=False):
     d1p, h4p, h1p = prep(d1), prep(h4), prep(h1)
     d1s, h4s, atr4, hc = align(d1p, h4p, h1p)
     sig = signals(h1p, d1s, h4s, entry)
@@ -152,25 +182,31 @@ def run(symbol, d1, h4, h1, entry='cross', exit_mode='trend'):
     t0, t1 = h1p.index[ready[0]], h1p.index[-1]
     cut = t0 + (t1 - t0) * (1 - TEST_FRAC)
     idx = h1p.index
+    tns = idx.as_unit('ns').asi8
     trades, free = [], 0
     for i in np.flatnonzero(sig != 0):
         if i < free or i >= len(h1p) - 1:
             continue
         if symbol == 'XAU/USD' and gold_closed(idx[i]):
             continue
+        if intraday and idx[i].hour >= NO_ENTRY_FROM_HOUR:
+            continue
+        if (intraday or max_hold is not None) and i + 1 < len(idx) and (tns[i + 1] - tns[i]) > 6 * 3_600_000_000_000:
+            continue                                   # ถือสั้น: ไม่เปิดไม้บนแท่งสุดท้ายก่อนตลาดหยุด
         s = int(sig[i])
         risk = SL_ATR_H4 * max(float(atr4[i]), 1e-9)
         entry_px = float(h1p.close.values[i])
-        j, px, why = simulate(h1p, i, s, risk, exit_mode, h4s, hc)
+        j, px, why = simulate(h1p, i, s, risk, exit_mode, h4s, hc, max_hold, tp_r, intraday)
         days = (idx[j] - idx[i]).total_seconds() / 86400
         side = 'LONG' if s == 1 else 'SHORT'
-        swap_r = entry_px * SWAP_PCT_DAY[symbol][side] / 100 * days / risk
+        nights = rollover_units(symbol, idx[i] + pd.Timedelta(hours=1), idx[j] + pd.Timedelta(hours=1))
+        swap_r = entry_px * SWAP_PCT_DAY[symbol][side] / 100 * nights / risk
         cost = SPREAD[symbol] / risk + swap_r
         r = s * (px - entry_px) / risk
         trades.append({'symbol': symbol, 'time': idx[i], 'period': DEV if idx[i] < cut else TEST,
                        'dir': side, 'entry': entry_px, 'exit': float(px), 'risk': risk,
                        'exit_time': idx[j], 'result': why, 'days': days,
-                       'R_gross': r, 'swap_R': swap_r, 'R_net': r - cost})
+                       'nights': nights, 'R_gross': r, 'swap_R': swap_r, 'R_net': r - cost})
         free = j + 1
     return pd.DataFrame(trades)
 
@@ -240,6 +276,31 @@ def compare(data):
                          'ทดสอบ: เทรด': stt.get('เทรด', 0), 'ทดสอบ: R สุทธิ': stt.get('R/เทรด สุทธิ'),
                          'ทดสอบ: ช่วงเชื่อมั่น': stt.get('ช่วงเชื่อมั่น 95%'),
                          'ชนะ % รวม': stats(t)['ชนะ %'], 'PF รวม': stats(t)['PF'], 'ผล': _verdict(dev, test)})
+    return pd.DataFrame(rows)
+
+
+HOLD_CHOICES = {'12 ชม.': 12, '1 วัน': 24, '2 วัน': 48, '3 วัน': 72, '15 วัน (แบบเดิม)': None}
+TP_CHOICES = {'1R': 1.0, '1.5R': 1.5, '2R': 2.0}
+
+
+def compare_short(symbol, frames, entry='cross'):
+    """ถือสั้น: เทียบ TP 1 / 1.5 / 2R กับเวลาถือสูงสุด 12 ชม. - 3 วัน และโหมดไม่ข้ามคืน"""
+    rows = []
+    combos = [(tp, hold, False) for tp in TP_CHOICES for hold in ('12 ชม.', '1 วัน', '2 วัน', '3 วัน')]
+    combos += [(tp, 'ไม่ข้ามคืน', True) for tp in TP_CHOICES]
+    for tp, hold, intra in combos:
+        t = run(symbol, *frames, entry=entry, exit_mode='tp', tp_r=TP_CHOICES[tp],
+                max_hold=None if intra else HOLD_CHOICES[hold], intraday=intra)
+        if len(t) == 0:
+            rows.append({'TP': tp, 'ถือนานสุด': hold, 'ผล': 'ไม่มีเทรด'})
+            continue
+        dev, test = t[t.period == DEV], t[t.period == TEST]
+        sd, stt, sa = stats(dev), stats(test), stats(t)
+        rows.append({'TP': tp, 'ถือนานสุด': hold, 'เทรด': sa['เทรด'], 'ชนะ %': sa['ชนะ %'],
+                     'ถือเฉลี่ย (วัน)': sa['ถือเฉลี่ย (วัน)'], 'R/เทรด สุทธิ': sa['R/เทรด สุทธิ'],
+                     'ช่วงเชื่อมั่น 95%': sa['ช่วงเชื่อมั่น 95%'], 'PF': sa['PF'],
+                     'พัฒนา: R สุทธิ': sd.get('R/เทรด สุทธิ'), 'ทดสอบ: R สุทธิ': stt.get('R/เทรด สุทธิ'),
+                     'ผล': _verdict(dev, test)})
     return pd.DataFrame(rows)
 
 
