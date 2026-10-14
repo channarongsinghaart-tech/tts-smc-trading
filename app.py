@@ -102,7 +102,7 @@ with tab_live:
 
 # ---------------- Backtest ----------------
 @st.cache_data(ttl=3600, show_spinner=False)
-def cached_history(symbol, key, pages):
+def cached_history(symbol, key, pages, ver=3):
     core.API_KEY = key
     bt.M15_PAGES = int(pages)
     return bt.load_history(symbol)
