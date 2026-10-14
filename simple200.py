@@ -1,0 +1,260 @@
+"""ระบบง่าย SMA200 สามกรอบ (D1 / H4 / H1) — ใช้แค่เส้น SMA200 กับ ATR
+
+1) ทิศ    : ราคาปิด D1 อยู่เหนือ SMA200(D1) = ซื้ออย่างเดียว | อยู่ใต้ = ขายอย่างเดียว
+2) ยืนยัน : ราคาปิด H4 ต้องอยู่ฝั่งเดียวกับ SMA200(H4)
+3) จุดเข้า : เลือกได้ 2 แบบ
+   'cross'    = แท่ง H1 ปิดข้ามเส้น SMA200(H1) กลับมาฝั่งเดียวกับ D1/H4 (ครบ 3 กรอบพอดี)
+   'pullback' = H1 อยู่ฝั่งถูกอยู่แล้ว ย่อมาแตะ SMA200(H1) แล้วปิดยืนได้ (แท่งปิดไปทางเดียวกับทิศ)
+4) SL      : ห่างจากราคาเข้า 1.5 x ATR(H4)
+5) ออก     : เลือกได้ 'tp' = TP 2R | 'trend' = ออกเมื่อ H4 ปิดกลับไปอีกฝั่งของ SMA200(H4)
+ใช้เฉพาะแท่งที่ปิดแล้ว (ไม่แอบดูอนาคต) และไม่เข้าเทรดทองตอนตลาดปิด
+"""
+import math
+import numpy as np
+import pandas as pd
+import requests
+import m1_swing_scanner as core
+
+SMA_N = 200
+SL_ATR_H4 = 1.5
+TP_R = 2.0
+PULL_TOL_ATR = 0.2            # ระยะที่นับว่า "แตะเส้น" (ATR ของ H1)
+MAX_HOLD_H1 = 24 * 15         # ถือนานสุด 15 วัน
+TEST_FRAC = 0.3               # 30% ท้ายของช่วงเวลาเก็บไว้ทดสอบ
+SPREAD = {'BTC/USD': 6.4, 'XAU/USD': 0.30}
+SWAP_PCT_DAY = {'BTC/USD': 0.0, 'XAU/USD': 0.0}   # ค่าข้ามคืน % ของราคาต่อวัน (ใส่ตามโบรกเกอร์)
+ENTRY_NAMES = {'cross': 'H1 ข้ามเส้น 200', 'pullback': 'H1 ย่อแตะเส้น 200'}
+EXIT_NAMES = {'tp': 'TP 2R', 'trend': 'ออกเมื่อ H4 กลับฝั่ง'}
+DEV, TEST = 'พัฒนา', 'ทดสอบ'
+
+
+def prep(d):
+    d = d.copy()
+    c, h, l = d.close, d.high, d.low
+    d['SMA'] = c.rolling(SMA_N).mean()
+    tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
+    d['ATR'] = tr.ewm(alpha=1 / 14, adjust=False).mean()
+    d['side'] = np.sign(c - d['SMA']).fillna(0)
+    return d
+
+
+def gold_closed(ts):
+    """ตลาดทองปิด: เสาร์ทั้งวัน, อาทิตย์ก่อน 22:00 UTC, ศุกร์หลัง 21:00 UTC"""
+    dow, hr = ts.dayofweek, ts.hour
+    return dow == 5 or (dow == 6 and hr < 22) or (dow == 4 and hr >= 21)
+
+
+# ---------------- ข้อมูล ----------------
+def history(symbol, interval, size, pages=1):
+    frames, end = [], None
+    for p in range(pages):
+        core._pace()
+        params = {'symbol': symbol, 'interval': interval, 'outputsize': size,
+                  'apikey': core.API_KEY, 'timezone': 'UTC'}
+        if end:
+            params['end_date'] = end
+        data = requests.get(f'{core.BASE}/time_series', params=params, timeout=60).json()
+        if 'values' not in data:
+            if p > 0:
+                break                      # ข้อมูลย้อนหลังหมดแล้ว ใช้เท่าที่มี
+            raise RuntimeError(data.get('message', 'no data'))
+        d = pd.DataFrame(data['values'])
+        for c in ('open', 'high', 'low', 'close'):
+            d[c] = pd.to_numeric(d[c], errors='coerce')
+        d['datetime'] = pd.to_datetime(d['datetime'], utc=True)
+        d = d.sort_values('datetime').set_index('datetime').dropna(subset=['open', 'high', 'low', 'close'])
+        if p == 0 and len(d) > 1:
+            d = d.iloc[:-1]                # ตัดแท่งที่ยังไม่ปิด
+        frames.append(d)
+        end = (d.index[0] - pd.Timedelta(seconds=1)).strftime('%Y-%m-%d %H:%M:%S')
+    out = pd.concat(frames).sort_index()
+    return out[~out.index.duplicated()]
+
+
+def load_history(symbol, h1_pages=4):
+    h1 = history(symbol, '1h', 5000, h1_pages)
+    days = (h1.index[-1] - h1.index[0]).days + 2
+    h4 = history(symbol, '4h', 5000, max(1, math.ceil((days * 6 + 260) / 5000)))
+    d1 = history(symbol, '1day', min(5000, days + 260))
+    return d1, h4, h1
+
+
+# ---------------- สัญญาณ ----------------
+def align(d1p, h4p, h1p):
+    """สถานะ D1/H4 ณ เวลาปิดของแต่ละแท่ง H1 (ใช้เฉพาะแท่ง D1/H4 ที่ปิดแล้ว)"""
+    asof = (h1p.index.tz_localize(None) + pd.Timedelta(hours=1)).values
+    dc = np.searchsorted((d1p.index.tz_localize(None) + pd.Timedelta(days=1)).values, asof, side='right')
+    hc = np.searchsorted((h4p.index.tz_localize(None) + pd.Timedelta(hours=4)).values, asof, side='right')
+    ok = (dc >= SMA_N) & (hc >= SMA_N)
+    d1s = np.where(ok, d1p.side.values[np.maximum(dc - 1, 0)], 0)
+    h4s = np.where(ok, h4p.side.values[np.maximum(hc - 1, 0)], 0)
+    atr4 = h4p.ATR.values[np.maximum(hc - 1, 0)]
+    return d1s, h4s, atr4, hc
+
+
+def signals(h1p, d1s, h4s, entry):
+    """คืน +1 (ซื้อ) / -1 (ขาย) / 0 ของแต่ละแท่ง H1"""
+    s1 = h1p.side.values
+    prev = np.r_[0, s1[:-1]]
+    trend = np.where((d1s == h4s) & (d1s != 0), d1s, 0)
+    if entry == 'cross':
+        sig = (trend != 0) & (s1 == trend) & (prev == -trend)
+    else:
+        sma, atr = h1p.SMA.values, h1p.ATR.values
+        op, hi, lo, cl = h1p.open.values, h1p.high.values, h1p.low.values, h1p.close.values
+        touch_long = (lo <= sma + PULL_TOL_ATR * atr) & (cl > op)
+        touch_short = (hi >= sma - PULL_TOL_ATR * atr) & (cl < op)
+        sig = (trend != 0) & (s1 == trend) & (prev == trend) & np.where(trend == 1, touch_long, touch_short)
+    return np.where(sig, trend, 0).astype(int)
+
+
+# ---------------- จำลองเทรด ----------------
+def simulate(h1p, i, s, risk, exit_mode, h4s, hc):
+    op, hi, lo, cl = h1p.open.values, h1p.high.values, h1p.low.values, h1p.close.values
+    n = len(cl)
+    entry = cl[i]
+    sl, tp = entry - s * risk, entry + s * TP_R * risk
+    last = min(n - 1, i + MAX_HOLD_H1)
+    for j in range(i + 1, last + 1):
+        if s == 1:                                         # SL ก่อนเสมอ (เข้าข้างร้าย) และคิดราคาเปิดที่กระโดดข้าม
+            if op[j] <= sl:
+                return j, op[j], 'SL'
+            if lo[j] <= sl:
+                return j, sl, 'SL'
+        else:
+            if op[j] >= sl:
+                return j, op[j], 'SL'
+            if hi[j] >= sl:
+                return j, sl, 'SL'
+        if exit_mode == 'tp':
+            if s == 1 and op[j] >= tp:
+                return j, op[j], 'TP'
+            if s == 1 and hi[j] >= tp:
+                return j, tp, 'TP'
+            if s == -1 and op[j] <= tp:
+                return j, op[j], 'TP'
+            if s == -1 and lo[j] <= tp:
+                return j, tp, 'TP'
+        elif hc[j] != hc[j - 1] and h4s[j] == -s:          # แท่ง H4 เพิ่งปิด และกลับฝั่งเส้น 200
+            return j, cl[j], 'H4 กลับฝั่ง'
+    return last, cl[last], 'หมดเวลา' if last < n - 1 else 'จบข้อมูล'
+
+
+def run(symbol, d1, h4, h1, entry='cross', exit_mode='trend'):
+    d1p, h4p, h1p = prep(d1), prep(h4), prep(h1)
+    d1s, h4s, atr4, hc = align(d1p, h4p, h1p)
+    sig = signals(h1p, d1s, h4s, entry)
+    ready = np.flatnonzero(d1s != 0)
+    if len(ready) == 0:
+        return pd.DataFrame()
+    t0, t1 = h1p.index[ready[0]], h1p.index[-1]
+    cut = t0 + (t1 - t0) * (1 - TEST_FRAC)
+    idx = h1p.index
+    trades, free = [], 0
+    for i in np.flatnonzero(sig != 0):
+        if i < free or i >= len(h1p) - 1:
+            continue
+        if symbol == 'XAU/USD' and gold_closed(idx[i]):
+            continue
+        s = int(sig[i])
+        risk = SL_ATR_H4 * max(float(atr4[i]), 1e-9)
+        entry_px = float(h1p.close.values[i])
+        j, px, why = simulate(h1p, i, s, risk, exit_mode, h4s, hc)
+        days = (idx[j] - idx[i]).total_seconds() / 86400
+        cost = SPREAD[symbol] / risk + entry_px * SWAP_PCT_DAY[symbol] / 100 * days / risk
+        r = s * (px - entry_px) / risk
+        trades.append({'symbol': symbol, 'time': idx[i], 'period': DEV if idx[i] < cut else TEST,
+                       'dir': 'LONG' if s == 1 else 'SHORT', 'entry': entry_px, 'exit': float(px),
+                       'exit_time': idx[j], 'result': why, 'days': days,
+                       'R_gross': r, 'R_net': r - cost})
+        free = j + 1
+    return pd.DataFrame(trades)
+
+
+# ---------------- สรุปผล ----------------
+def _verdict(dev, test, min_n=20):
+    if len(dev) < min_n or len(test) < min_n:
+        return 'ข้อมูลน้อย'
+    def z(x):
+        sd = x.std(ddof=1)
+        return x.mean() / (sd / math.sqrt(len(x))) if sd > 0 else 0.0
+    zd, zt = z(dev.R_net), z(test.R_net)
+    if zd > 2 and zt > 1:
+        return '✓ ได้เปรียบชัดทั้งสองช่วง'
+    if zd < -2 and zt < -1:
+        return '✗ เสียเปรียบชัดทั้งสองช่วง'
+    return 'ไม่ชัด'
+
+
+def stats(t):
+    n = len(t)
+    if n == 0:
+        return {'เทรด': 0}
+    r = t.R_net
+    m = r.mean()
+    se = r.std(ddof=1) / math.sqrt(n) if n > 1 else float('nan')
+    loss = -r[r < 0].sum()
+    cum = r.cumsum()
+    return {'เทรด': n, 'ชนะ %': round((r > 0).mean() * 100, 1),
+            'R/เทรด ก่อนหักต้นทุน': round(t.R_gross.mean(), 3), 'R/เทรด สุทธิ': round(m, 3),
+            'ช่วงเชื่อมั่น 95%': f'{m - 1.96 * se:+.2f} ถึง {m + 1.96 * se:+.2f}' if n > 1 else '-',
+            'PF': round(r[r > 0].sum() / loss, 2) if loss > 0 else float('nan'),
+            'R รวม': round(r.sum(), 1), 'ขาดทุนสะสมสูงสุด R': round((cum.cummax() - cum).max(), 1),
+            'ถือเฉลี่ย (วัน)': round(t.days.mean(), 1)}
+
+
+def report(t):
+    rows = []
+    if len(t) == 0:
+        return pd.DataFrame()
+    t = t.sort_values('time')
+    groups = [('รวมทั้งหมด', t), (f'ช่วง{DEV}', t[t.period == DEV]), (f'ช่วง{TEST}', t[t.period == TEST])]
+    groups += [(s, t[t.symbol == s]) for s in t.symbol.unique()]
+    groups += [(d, t[t.dir == d]) for d in ('LONG', 'SHORT') if (t.dir == d).any()]
+    for name, g in groups:
+        rows.append({'กลุ่ม': name, **stats(g)})
+    out = pd.DataFrame(rows)
+    out.attrs['verdict'] = _verdict(t[t.period == DEV], t[t.period == TEST])
+    return out
+
+
+def compare(data):
+    """เทียบ 4 แบบ (จุดเข้า 2 x การออก 2) กับข้อมูลชุดเดียวกัน"""
+    rows = []
+    for e in ENTRY_NAMES:
+        for x in EXIT_NAMES:
+            parts = [run(sym, *frames, entry=e, exit_mode=x) for sym, frames in data.items()]
+            t = pd.concat([p for p in parts if len(p)], ignore_index=True) if any(len(p) for p in parts) else pd.DataFrame()
+            if len(t) == 0:
+                rows.append({'จุดเข้า': ENTRY_NAMES[e], 'การออก': EXIT_NAMES[x], 'ผล': 'ไม่มีเทรด'})
+                continue
+            dev, test = t[t.period == DEV], t[t.period == TEST]
+            sd, stt = stats(dev), stats(test)
+            rows.append({'จุดเข้า': ENTRY_NAMES[e], 'การออก': EXIT_NAMES[x],
+                         'พัฒนา: เทรด': sd.get('เทรด', 0), 'พัฒนา: R สุทธิ': sd.get('R/เทรด สุทธิ'),
+                         'พัฒนา: ช่วงเชื่อมั่น': sd.get('ช่วงเชื่อมั่น 95%'),
+                         'ทดสอบ: เทรด': stt.get('เทรด', 0), 'ทดสอบ: R สุทธิ': stt.get('R/เทรด สุทธิ'),
+                         'ทดสอบ: ช่วงเชื่อมั่น': stt.get('ช่วงเชื่อมั่น 95%'),
+                         'ชนะ % รวม': stats(t)['ชนะ %'], 'PF รวม': stats(t)['PF'], 'ผล': _verdict(dev, test)})
+    return pd.DataFrame(rows)
+
+
+# ---------------- สแกนสด ----------------
+def live(symbol):
+    d1 = prep(core.fetch(symbol, '1day', 300))
+    h4 = prep(core.fetch(symbol, '4h', 300))
+    h1 = prep(core.fetch(symbol, '1h', 300))
+    d1s, h4s, atr4, hc = align(d1, h4, h1)
+    state = {}
+    for name, d in (('D1', d1), ('H4', h4), ('H1', h1)):
+        x = d.iloc[-1]
+        state[name] = {'side': int(x.side), 'close': float(x.close), 'sma': float(x.SMA),
+                       'dist_atr': float((x.close - x.SMA) / x.ATR) if x.ATR > 0 else float('nan')}
+    trend = state['D1']['side'] if state['D1']['side'] == state['H4']['side'] else 0
+    sig = {e: int(signals(h1, d1s, h4s, e)[-1]) for e in ENTRY_NAMES}
+    risk = SL_ATR_H4 * float(h4.ATR.iloc[-1])
+    entry = float(h1.close.iloc[-1])
+    s = trend if trend else 1
+    plan = {'entry': entry, 'sl': entry - s * risk, 'tp': entry + s * TP_R * risk, 'risk': risk}
+    return {'state': state, 'trend': trend, 'signal': sig, 'plan': plan, 'h1': h1,
+            'time': h1.index[-1], 'gold_closed': symbol == 'XAU/USD' and gold_closed(h1.index[-1])}
