@@ -158,3 +158,32 @@ with tab_bt:
                 st.download_button('ดาวน์โหลดรายการเทรด CSV', all_t.to_csv(index=False), 'backtest_trades.csv')
         except Exception as e:
             st.error(f'Backtest ไม่สำเร็จ: {e}')
+
+    st.divider()
+    st.write('**🧩 ทดสอบแยกส่วน**')
+    st.caption('เทียบ A ทิศอย่างเดียว / B +SMA200 H1 / C +Market Profile / D ระบบเต็ม ที่ระยะถือ 4 ชม. / 1 วัน / 3 วัน '
+               'ใช้ข้อมูลชุดเดียวกับ Backtest (ไม่เสีย credits เพิ่มถ้ารัน Backtest แล้ว) ใช้เวลาราว 2-5 นาที')
+    if st.button('รันทดสอบแยกส่วน', use_container_width=True, key='abl'):
+        try:
+            bt.SPREAD['BTC/USD'], bt.SPREAD['XAU/USD'] = float(sp_btc), float(sp_xau)
+            parts = []
+            bar = st.progress(0.0, text='เริ่ม...')
+            for k, (nm, sym) in enumerate(core.ASSETS.items()):
+                bar.progress(k / len(core.ASSETS), text=f'ทดสอบแยกส่วน {sym} ...')
+                d1, h4, h1, m15 = cached_history(sym, KEY, pages)
+                parts.append(bt.ablation_study(sym, d1, h4, h1, m15))
+            bar.progress(1.0, text='เสร็จแล้ว')
+            abl = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+            for sym in core.ASSETS.values():
+                st.write(f'**{sym}**')
+                st.dataframe(bt.ablation_report(abl[abl.symbol == sym]) if len(abl) else pd.DataFrame(),
+                             use_container_width=True, hide_index=True)
+            st.write('**รวมทองและ BTC**')
+            st.dataframe(bt.ablation_report(abl), use_container_width=True, hide_index=True)
+            st.caption('อ่านผล: "เฉลี่ย (ATR H1)" คือราคาไปตามทิศกี่ ATR หลังหักสเปรด ต้องเป็นบวกทั้งช่วงพัฒนาและทดสอบ | '
+                       'z มากกว่า 2 = ไม่น่าใช่ความบังเอิญ | A ต้องดีกว่า "เทียบ: ซื้อทุกแท่ง H4" ถึงจะบอกได้ว่าทิศมีประโยชน์ | '
+                       'B, C, D ต้องดีกว่า A ถึงจะบอกได้ว่าจุดเข้าเพิ่มคุณค่า')
+            if len(abl):
+                st.download_button('ดาวน์โหลดผลทดสอบแยกส่วน CSV', abl.to_csv(index=False), 'ablation.csv')
+        except Exception as e:
+            st.error(f'ทดสอบแยกส่วนไม่สำเร็จ: {e}')
