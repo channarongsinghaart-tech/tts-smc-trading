@@ -31,6 +31,13 @@ GRID_SL = (0.75, 1.0, 1.5)                          # ระยะ SL เที�
 GRID_TP = (0.5, 1.0, 1.5, 2.0)                      # ระยะ TP เป็นกี่เท่าของ SL
 DIR_HORIZON_H4 = 6                                  # วัดความถูกต้องของทิศใน 6 แท่ง H4 (24 ชม.)
 DEV, TEST = 'พัฒนา', 'ทดสอบ'
+ABL_HORIZONS = {'4 ชม.': 16, '1 วัน': 96, '3 วัน': 288}   # หน่วยแท่ง M15
+ABL_A = 'A ทิศอย่างเดียว (เข้าทุกแท่ง H4)'
+ABL_B = 'B ทิศ + SMA200 H1'
+ABL_C = 'C ทิศ + Market Profile'
+ABL_D = 'D ระบบเต็ม'
+ABL_BASE = 'เทียบ: ซื้อทุกแท่ง H4'
+ABL_ORDER = [ABL_BASE, ABL_A, ABL_B, ABL_C, ABL_D]
 
 
 def history(symbol, interval, size, pages=1):
@@ -320,6 +327,97 @@ def report(all_t, n_wins):
     lines.append('\nหมายเหตุ: TP1 = 1R ต้องชนะ >50% (บวกต้นทุน) ถึงจะเริ่มไม่ขาดทุน | '
                  'เทรดน้อยกว่า ~30 รายการ ตัวเลข % ยังไม่น่าเชื่อถือ | ผลย้อนหลังไม่รับประกันอนาคต')
     return '\n'.join(lines)
+
+
+# ---------- ทดสอบแยกส่วน ----------
+def ablation_study(symbol, d1, h4, h1, m15):
+    """หาสัญญาณของแต่ละแบบ แล้ววัดว่าราคาไปตามทิศกี่ ATR(H1) ใน 4 ชม. / 1 วัน / 3 วัน
+    (หักสเปรดแล้ว, จุดที่วัดในแต่ละแบบไม่ซ้อนกัน)"""
+    d1p, h4p, h1p, m15p = st.prep(d1), st.prep(h4), st.prep(h1), st.prep(m15)
+    asof_ts = m15.index + pd.Timedelta(minutes=15)
+    asof = asof_ts.tz_localize(None).values
+    dc_all = np.searchsorted((d1.index.tz_localize(None) + pd.Timedelta(days=1)).values, asof, side='right')
+    hc_all = np.searchsorted((h4.index.tz_localize(None) + pd.Timedelta(hours=4)).values, asof, side='right')
+    h1c_all = np.searchsorted((h1.index.tz_localize(None) + pd.Timedelta(hours=1)).values, asof, side='right')
+    need = st.SMA_N + st.SLOPE_BARS + 2
+    ok_idx = np.flatnonzero((dc_all >= need) & (hc_all >= need) & (h1c_all >= st.SMA_N + 2))
+    if len(ok_idx) == 0:
+        return pd.DataFrame()
+    lo_idx = max(WARMUP, int(ok_idx[0]))
+    cut = split_time(m15, lo_idx)
+    h4_mark = (asof_ts.hour % 4 == 0) & (asof_ts.minute == 0)
+    sig = {v: [] for v in ABL_ORDER}
+    dir_cache = {}
+    n = len(m15)
+    for i in range(lo_idx, n - min(ABL_HORIZONS.values())):
+        if symbol == 'XAU/USD' and gold_closed(m15.index[i]):
+            continue
+        key = (dc_all[i], hc_all[i])
+        if key not in dir_cache:
+            dir_cache[key] = st.direction(d1p.iloc[:dc_all[i]], h4p.iloc[:hc_all[i]])[0]
+        dr = dir_cache[key]
+        if h4_mark[i]:
+            sig[ABL_BASE].append((i, 'LONG'))
+            if dr:
+                sig[ABL_A].append((i, dr))
+        if not dr or not st.confirm_candle(m15p.iloc[i], dr == 'LONG'):
+            continue
+        h1s, m15s = h1p.iloc[:h1c_all[i]], m15p.iloc[:i + 1]
+        if st.entry_setup(h1s, m15s, dr, [], use_sma=True)[0]:
+            sig[ABL_B].append((i, dr))
+        levels = st.profile_levels(h1s)
+        if st.entry_setup(h1s, m15s, dr, levels, use_sma=False)[0]:
+            sig[ABL_C].append((i, dr))
+        if st.entry_setup(h1s, m15s, dr, levels, use_sma=True)[0]:
+            sig[ABL_D].append((i, dr))
+    cl = m15.close.values
+    atr_h1 = h1p.ATR.values
+    rows = []
+    for v, lst in sig.items():
+        for hname, hb in ABL_HORIZONS.items():
+            free = -1
+            for i, dr in lst:
+                if i < free:
+                    continue
+                if i + hb >= n:
+                    break
+                a = max(float(atr_h1[h1c_all[i] - 1]), 1e-9)
+                s = 1 if dr == 'LONG' else -1
+                move = s * (cl[i + hb] - cl[i]) / a - SPREAD[symbol] / a
+                rows.append({'symbol': symbol, 'variant': v, 'horizon': hname,
+                             'period': DEV if m15.index[i] < cut else TEST, 'move_atr': move})
+                free = i + hb
+    return pd.DataFrame(rows)
+
+
+def ablation_report(df, min_n=20):
+    if df is None or len(df) == 0:
+        return pd.DataFrame()
+    rows = []
+    for v in ABL_ORDER:
+        for h in ABL_HORIZONS:
+            row = {'แบบ': v, 'ระยะถือ': h}
+            zs, ns = {}, {}
+            for p in (DEV, TEST):
+                x = df[(df.variant == v) & (df.horizon == h) & (df.period == p)].move_atr
+                n = len(x)
+                sd = x.std(ddof=1) if n > 2 else 0
+                z = x.mean() / (sd / math.sqrt(n)) if n >= min_n and sd > 0 else np.nan
+                zs[p], ns[p] = z, n
+                row[f'{p}: จุด'] = n
+                row[f'{p}: ไปตามทิศ %'] = round((x > 0).mean() * 100, 1) if n else np.nan
+                row[f'{p}: เฉลี่ย (ATR H1)'] = round(x.mean(), 3) if n else np.nan
+                row[f'{p}: z'] = round(z, 2) if not np.isnan(z) else np.nan
+            if min(ns.values()) < min_n:
+                row['ผล'] = 'ข้อมูลน้อย'
+            elif zs[DEV] > 2 and zs[TEST] > 1:
+                row['ผล'] = '✓ ได้เปรียบชัดทั้งสองช่วง'
+            elif zs[DEV] < -2 and zs[TEST] < -1:
+                row['ผล'] = '✗ เสียเปรียบชัดทั้งสองช่วง'
+            else:
+                row['ผล'] = 'ไม่ชัด'
+            rows.append(row)
+    return pd.DataFrame(rows)
 
 
 # ---------- รายงานเชิงลึก (คืนเป็นตาราง DataFrame) ----------
