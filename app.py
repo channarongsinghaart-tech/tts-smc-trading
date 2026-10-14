@@ -89,12 +89,16 @@ with tab_bt:
     exit_ = st.selectbox('การออก', list(S.EXIT_NAMES.values()))
     sp_btc = st.number_input('สเปรด BTC (หน่วยราคา)', value=6.4, step=0.5)
     sp_xau = st.number_input('สเปรดทอง (หน่วยราคา)', value=0.30, step=0.05)
-    sw_btc = st.number_input('ค่าข้ามคืน BTC (% ของราคาต่อวัน)', value=0.0, step=0.01, format='%.3f')
-    sw_xau = st.number_input('ค่าข้ามคืนทอง (% ของราคาต่อวัน)', value=0.0, step=0.01, format='%.3f')
+    st.caption('ค่าข้ามคืน (% ของราคาต่อวัน) ค่าบวก = เสียเงิน | ทองตั้งไว้ตามบัญชี Exness ของคุณ (ต.ค. 2026)')
+    sw_xau_l = st.number_input('ค่าข้ามคืนทอง ฝั่งซื้อ', value=0.0124, step=0.001, format='%.4f')
+    sw_xau_s = st.number_input('ค่าข้ามคืนทอง ฝั่งขาย', value=0.0, step=0.001, format='%.4f')
+    sw_btc_l = st.number_input('ค่าข้ามคืน BTC ฝั่งซื้อ', value=0.0, step=0.001, format='%.4f')
+    sw_btc_s = st.number_input('ค่าข้ามคืน BTC ฝั่งขาย', value=0.0, step=0.001, format='%.4f')
     if st.button('รัน Backtest', use_container_width=True, key='bt'):
         try:
             S.SPREAD['BTC/USD'], S.SPREAD['XAU/USD'] = float(sp_btc), float(sp_xau)
-            S.SWAP_PCT_DAY['BTC/USD'], S.SWAP_PCT_DAY['XAU/USD'] = float(sw_btc), float(sw_xau)
+            S.SWAP_PCT_DAY['XAU/USD'] = {'LONG': float(sw_xau_l), 'SHORT': float(sw_xau_s)}
+            S.SWAP_PCT_DAY['BTC/USD'] = {'LONG': float(sw_btc_l), 'SHORT': float(sw_btc_s)}
             e_key = {v: k for k, v in S.ENTRY_NAMES.items()}[entry]
             x_key = {v: k for k, v in S.EXIT_NAMES.items()}[exit_]
             data = {}
