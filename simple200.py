@@ -111,6 +111,30 @@ def align(d1p, h4p, h1p):
     return d1s, h4s, atr4, hc
 
 
+def context(d1p, h4p, h1p):
+    """ตัวชี้วัดสภาพตลาด ณ เวลาปิดของแต่ละแท่ง H1 (ใช้เฉพาะแท่ง D1/H4 ที่ปิดแล้ว)
+    dist_d1 = ราคาปิด D1 ห่างเส้น 200 กี่ ATR(D1) | slope_h4 = เส้น 200 ของ H4 เปลี่ยนไปกี่ ATR(H4) ใน 10 แท่ง"""
+    asof = (h1p.index.tz_localize(None) + pd.Timedelta(hours=1)).values
+    dc = np.searchsorted((d1p.index.tz_localize(None) + pd.Timedelta(days=1)).values, asof, side='right')
+    hc = np.searchsorted((h4p.index.tz_localize(None) + pd.Timedelta(hours=4)).values, asof, side='right')
+    di, hi_ = np.maximum(dc - 1, 0), np.maximum(hc - 1, 0)
+    d_atr = d1p.ATR.values[di]
+    dist_d1 = (d1p.close.values[di] - d1p.SMA.values[di]) / np.where(d_atr > 0, d_atr, np.nan)
+    sma4 = h4p.SMA.values
+    h_atr = h4p.ATR.values[hi_]
+    slope_h4 = (sma4[hi_] - sma4[np.maximum(hi_ - 10, 0)]) / np.where(h_atr > 0, h_atr, np.nan)
+    h, l, c = h4p.high, h4p.low, h4p.close
+    up, dn = h.diff(), -l.diff()
+    pdm = pd.Series(np.where((up > dn) & (up > 0), up, 0.0), index=h4p.index)
+    mdm = pd.Series(np.where((dn > up) & (dn > 0), dn, 0.0), index=h4p.index)
+    tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1 / 14, adjust=False).mean()
+    pdi = 100 * pdm.ewm(alpha=1 / 14, adjust=False).mean() / atr
+    mdi = 100 * mdm.ewm(alpha=1 / 14, adjust=False).mean() / atr
+    adx4 = (100 * (pdi - mdi).abs() / (pdi + mdi).replace(0, np.nan)).ewm(alpha=1 / 14, adjust=False).mean().values
+    return {'dist_d1': dist_d1, 'slope_h4': slope_h4, 'adx_h4': adx4[hi_]}
+
+
 def signals(h1p, d1s, h4s, entry):
     """คืน +1 (ซื้อ) / -1 (ขาย) / 0 ของแต่ละแท่ง H1"""
     s1 = h1p.side.values
@@ -172,9 +196,13 @@ def simulate(h1p, i, s, risk, exit_mode, h4s, hc, max_hold=None, tp_r=None, intr
     return last, cl[last], 'หมดเวลา' if last < n - 1 else 'จบข้อมูล'
 
 
-def run(symbol, d1, h4, h1, entry='cross', exit_mode='trend', max_hold=None, tp_r=None, intraday=False):
+def run(symbol, d1, h4, h1, entry='cross', exit_mode='trend', max_hold=None, tp_r=None, intraday=False,
+        filters=None):
+    """filters (ไม่ใส่ = แบบเดิม): {'no_weekend': True, 'min_dist_d1': 1.0, 'slope_h4': True}"""
+    filters = filters or {}
     d1p, h4p, h1p = prep(d1), prep(h4), prep(h1)
     d1s, h4s, atr4, hc = align(d1p, h4p, h1p)
+    ctx = context(d1p, h4p, h1p)
     sig = signals(h1p, d1s, h4s, entry)
     ready = np.flatnonzero(d1s != 0)
     if len(ready) == 0:
@@ -194,6 +222,12 @@ def run(symbol, d1, h4, h1, entry='cross', exit_mode='trend', max_hold=None, tp_
         if (intraday or max_hold is not None) and i + 1 < len(idx) and (tns[i + 1] - tns[i]) > 6 * 3_600_000_000_000:
             continue                                   # ถือสั้น: ไม่เปิดไม้บนแท่งสุดท้ายก่อนตลาดหยุด
         s = int(sig[i])
+        if filters.get('no_weekend') and idx[i].dayofweek >= 5:
+            continue
+        if filters.get('min_dist_d1') is not None and not (s * ctx['dist_d1'][i] >= filters['min_dist_d1']):
+            continue
+        if filters.get('slope_h4') and not (s * ctx['slope_h4'][i] > 0):
+            continue
         risk = SL_ATR_H4 * max(float(atr4[i]), 1e-9)
         entry_px = float(h1p.close.values[i])
         j, px, why = simulate(h1p, i, s, risk, exit_mode, h4s, hc, max_hold, tp_r, intraday)
@@ -206,7 +240,9 @@ def run(symbol, d1, h4, h1, entry='cross', exit_mode='trend', max_hold=None, tp_
         trades.append({'symbol': symbol, 'time': idx[i], 'period': DEV if idx[i] < cut else TEST,
                        'dir': side, 'entry': entry_px, 'exit': float(px), 'risk': risk,
                        'exit_time': idx[j], 'result': why, 'days': days,
-                       'nights': nights, 'R_gross': r, 'swap_R': swap_r, 'R_net': r - cost})
+                       'nights': nights, 'R_gross': r, 'swap_R': swap_r, 'R_net': r - cost,
+                       'dist_d1': s * ctx['dist_d1'][i], 'slope_h4': s * ctx['slope_h4'][i],
+                       'adx_h4': ctx['adx_h4'][i], 'weekday': int(idx[i].dayofweek), 'hour': int(idx[i].hour)})
         free = j + 1
     return pd.DataFrame(trades)
 
@@ -301,6 +337,70 @@ def compare_short(symbol, frames, entry='cross'):
                      'ช่วงเชื่อมั่น 95%': sa['ช่วงเชื่อมั่น 95%'], 'PF': sa['PF'],
                      'พัฒนา: R สุทธิ': sd.get('R/เทรด สุทธิ'), 'ทดสอบ: R สุทธิ': stt.get('R/เทรด สุทธิ'),
                      'ผล': _verdict(dev, test)})
+    return pd.DataFrame(rows)
+
+
+FILTER_SETS = {
+    'พื้นฐาน (ไม่กรอง)': {},
+    'ไม่เข้าวันเสาร์-อาทิตย์': {'no_weekend': True},
+    'ราคา D1 ห่างเส้น 200 ≥ 1 ATR': {'min_dist_d1': 1.0},
+    'เส้น 200 ของ H4 ชันตามทิศ': {'slope_h4': True},
+    'รวมทั้ง 3 ข้อ': {'no_weekend': True, 'min_dist_d1': 1.0, 'slope_h4': True},
+}
+
+
+def compare_filters(symbol, frames, tp_r=2.0, max_hold=48):
+    """เทียบตัวกรองที่ตั้งสมมติฐานไว้ล่วงหน้า (ไม่ไล่หาตัวเลข) จุดเข้า H1 ข้ามเส้น 200 + TP 2R + ถือ ≤ 48 ชม."""
+    rows = []
+    for name, flt in FILTER_SETS.items():
+        t = run(symbol, *frames, entry='cross', exit_mode='tp', tp_r=tp_r, max_hold=max_hold, filters=flt)
+        if len(t) == 0:
+            rows.append({'ตัวกรอง': name, 'ผล': 'ไม่มีเทรด'})
+            continue
+        dev, test = t[t.period == DEV], t[t.period == TEST]
+        sa = stats(t)
+        rows.append({'ตัวกรอง': name, 'เทรด': sa['เทรด'], 'ชนะ %': sa['ชนะ %'], 'R/เทรด สุทธิ': sa['R/เทรด สุทธิ'],
+                     'ช่วงเชื่อมั่น 95%': sa['ช่วงเชื่อมั่น 95%'], 'PF': sa['PF'],
+                     'พัฒนา: R สุทธิ': stats(dev).get('R/เทรด สุทธิ'), 'ทดสอบ: R สุทธิ': stats(test).get('R/เทรด สุทธิ'),
+                     'ผล': _verdict(dev, test)})
+    return pd.DataFrame(rows)
+
+
+def diagnose(t, min_n=15):
+    """แยกเทรดตามสภาพตลาด ณ จุดเข้า ดูว่ากลุ่มไหนต่างจากค่าเฉลี่ยชัดทั้งสองช่วง"""
+    if len(t) == 0:
+        return pd.DataFrame()
+    dev, test = t[t.period == DEV], t[t.period == TEST]
+    bd, bt_ = dev.R_net.mean(), test.R_net.mean()
+
+    def z(x, base):
+        sd = x.R_net.std(ddof=1)
+        return (x.R_net.mean() - base) / (sd / math.sqrt(len(x))) if len(x) > 2 and sd > 0 else 0.0
+
+    rows = []
+
+    def add(feat, name, md, mt):
+        d, x = dev[md], test[mt]
+        flag = 'ข้อมูลน้อย'
+        if len(d) >= min_n and len(x) >= min_n:
+            zd, zt = z(d, bd), z(x, bt_)
+            flag = ('✓ ดีกว่าชัดทั้งสองช่วง' if zd > 2 and zt > 1 else
+                    '✗ แย่กว่าชัดทั้งสองช่วง' if zd < -2 and zt < -1 else 'ไม่ชัด')
+        rows.append({'ตัวชี้วัด': feat, 'กลุ่ม': name, 'พัฒนา: เทรด': len(d),
+                     'พัฒนา: R สุทธิ': round(d.R_net.mean(), 3) if len(d) else None,
+                     'ทดสอบ: เทรด': len(x), 'ทดสอบ: R สุทธิ': round(x.R_net.mean(), 3) if len(x) else None, 'ผล': flag})
+
+    add('วัน', 'จันทร์-ศุกร์', dev.weekday < 5, test.weekday < 5)
+    add('วัน', 'เสาร์-อาทิตย์', dev.weekday >= 5, test.weekday >= 5)
+    for name, a, b in (('เอเชีย 0-7', 0, 7), ('ลอนดอน 7-13', 7, 13), ('อเมริกา 13-21', 13, 21), ('ดึก 21-24', 21, 24)):
+        add('ช่วงเวลา (UTC)', name, (dev.hour >= a) & (dev.hour < b), (test.hour >= a) & (test.hour < b))
+    for feat in ('dist_d1', 'slope_h4', 'adx_h4'):
+        if dev[feat].dropna().nunique() < 3:
+            continue
+        q1, q2 = dev[feat].quantile([1 / 3, 2 / 3]).values
+        for name, lo, hi in (('ต่ำ', -np.inf, q1), ('กลาง', q1, q2), ('สูง', q2, np.inf)):
+            add(feat, f'{name} ({lo:.2f} ถึง {hi:.2f})', (dev[feat] > lo) & (dev[feat] <= hi),
+                (test[feat] > lo) & (test[feat] <= hi))
     return pd.DataFrame(rows)
 
 
