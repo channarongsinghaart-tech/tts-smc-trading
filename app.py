@@ -152,6 +152,32 @@ with tab_bt:
             st.error(f'เทียบแบบถือสั้นไม่สำเร็จ: {e}')
 
     st.divider()
+    st.write('**₿ ปรับระบบสำหรับ BTC: ทดสอบตัวกรอง 3 ข้อ**')
+    st.caption('จุดเข้า H1 ข้ามเส้น 200 + TP 2R + ถือไม่เกิน 48 ชม. | ตัวกรองตั้งจากเหตุผลไว้ก่อน ไม่ได้ไล่หาตัวเลข: '
+               'ไม่เข้าเสาร์-อาทิตย์ / ราคา D1 ห่างเส้น 200 ≥ 1 ATR / เส้น 200 ของ H4 ชันตามทิศ')
+    flt_asset = st.selectbox('สินทรัพย์', ['Bitcoin BTC/USD', 'Gold XAU/USD'], key='flt_asset')
+    if st.button('รันทดสอบตัวกรอง', use_container_width=True, key='flt'):
+        try:
+            S.SPREAD['BTC/USD'], S.SPREAD['XAU/USD'] = float(sp_btc), float(sp_xau)
+            S.SWAP_PCT_DAY['XAU/USD'] = {'LONG': float(sw_xau_l), 'SHORT': float(sw_xau_s)}
+            S.SWAP_PCT_DAY['BTC/USD'] = {'LONG': float(sw_btc_l), 'SHORT': float(sw_btc_s)}
+            sym = core.ASSETS[flt_asset]
+            with st.spinner('กำลังทดสอบ 5 แบบ ...'):
+                frames = cached_history(sym, KEY, pages)
+                st.dataframe(S.compare_filters(sym, frames), use_container_width=True, hide_index=True)
+                base = S.run(sym, *frames, entry='cross', exit_mode='tp', tp_r=2.0, max_hold=48)
+            st.write('**แยกเทรดตามสภาพตลาด ณ จุดเข้า (แบบไม่กรอง)**')
+            st.caption('ดูว่าเทรดแบบไหนแพ้บ่อย | เชื่อได้เฉพาะ ✓/✗ ที่ชัดทั้งสองช่วง | dist_d1 = ราคาห่างเส้น 200 (D1) กี่ ATR '
+                       '| slope_h4 = ความชันเส้น 200 (H4) ตามทิศเทรด | adx_h4 = ความแรงเทรนด์ H4')
+            st.dataframe(S.diagnose(base), use_container_width=True, hide_index=True)
+            if len(base):
+                st.download_button('ดาวน์โหลดเทรดพร้อมตัวชี้วัด CSV', base.to_csv(index=False), 'filter_trades.csv')
+            if sym == 'BTC/USD' and float(sw_btc_l) == 0 and float(sw_btc_s) == 0:
+                st.info('ยังไม่ได้ใส่ค่าข้ามคืนของ BTC ผลจริงอาจแย่กว่านี้ ดูค่าได้ใน MT5 → BTCUSDm → ข้อมูลจำเพาะ')
+        except Exception as e:
+            st.error(f'ทดสอบตัวกรองไม่สำเร็จ: {e}')
+
+    st.divider()
     st.write('**🔬 ห้องทดลองสวิง: 4 สูตรใหม่ ถือไม่เกิน 2 วัน เทรดได้ทั้งขึ้นและลง**')
     st.caption('M1 ย่อในเทรนด์ (RSI2) | M2 สวิงในกรอบ (Bollinger, ตลาดไม่มีเทรนด์) | M3 เบรกกรอบเอเชีย (ปิดในวัน) | '
                'M4 กวาด High/Low เมื่อวาน แบบ SMC (ปิดในวัน) | แต่ละสูตรทดสอบ TP 1R และ 1.5R | '
