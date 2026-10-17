@@ -3,7 +3,7 @@
 ทิศ      : D1 และ H4 อยู่ฝั่งเดียวกันของ SMA200 + H1 ต้องอยู่ฝั่งเดียวกันด้วย
 จุดเข้า   : แท่ง M15 ปิดข้ามเส้น SMA200(M15) กลับมาฝั่งเดียวกับกรอบใหญ่ทั้งหมด
 SL / TP  : SL 1.5 x ATR(H4) | TP 2R | ถือนานสุด 48 ชม. (ปิดก่อนตลาดหยุดสุดสัปดาห์)
-ใช้เฉพาะแท่งที่ปิดแล้ว | ทองไม่เข้าตอนตลาดปิด | หักสเปรดและค่าข้ามคืนตามจริง
+ใช้เฉพาะแท่งที่ปิดแล้ว | ทองไม่เข้าตอนตลาดปิด/พัก (20:58-22:00 UTC) และชั่วโมงสุดท้ายวันศุกร์ | หักสเปรดและค่าข้ามคืนตามจริง
 """
 import math
 import numpy as np
@@ -26,6 +26,18 @@ def load_history(symbol, m15_pages=4):
     h4 = S.history(symbol, '4h', 5000, max(1, math.ceil((days * 6 + 260) / 5000)))
     d1 = S.history(symbol, '1day', min(5000, days + 300))
     return d1, h4, h1, m15
+
+
+def no_entry_time(symbol, close_t):
+    """ช่วงที่เปิดไม้ทองจริงไม่ได้/ไม่ควรเปิด: พักตลาด 20:58-22:00 UTC, ชั่วโมงสุดท้ายก่อนปิดวันศุกร์, ตลาดปิด"""
+    if symbol != 'XAU/USD':
+        return False
+    hm = close_t.hour * 60 + close_t.minute
+    if 20 * 60 + 58 <= hm < 22 * 60:
+        return True
+    if close_t.dayofweek == 4 and hm >= 20 * 60:
+        return True
+    return S.gold_closed(close_t - pd.Timedelta(minutes=15))
 
 
 def _asof(frame_p, offset, target):
@@ -70,7 +82,7 @@ def run(symbol, d1, h4, h1, m15, tp_r=TP_R, max_hold=MAX_HOLD_H, cut=None):
             continue
         if symbol == 'XAU/USD' and S.gold_closed(idx[i]):
             continue
-        if (tns[i + 1] - tns[i]) > 6 * HOUR_NS:
+        if no_entry_time(symbol, idx[i] + pd.Timedelta(minutes=15)) or (tns[i + 1] - tns[i]) > 6 * HOUR_NS:
             continue
         s = int(sig[i])
         risk = SL_ATR_H4 * max(float(atr4[i]), 1e-9)
@@ -141,8 +153,10 @@ def live(symbol):
                      'dist_atr': float((x.close - x.SMA) / x.ATR) if enough and x.ATR > 0 else float('nan'),
                      'time': fp.index[-1] if len(fp) else None}
     trend = int(b['trend'][-1])
-    recent = np.flatnonzero(b['sig'][-FRESH_BARS:] != 0)
-    sig_i = len(m15p) - FRESH_BARS + int(recent[-1]) if len(recent) else None
+    base = len(m15p) - FRESH_BARS
+    recent = [k for k in np.flatnonzero(b['sig'][-FRESH_BARS:] != 0)
+              if not no_entry_time(symbol, m15p.index[base + k] + pd.Timedelta(minutes=15))]
+    sig_i = base + int(recent[-1]) if len(recent) else None
     risk = SL_ATR_H4 * float(b['atr4'][-1])
     out = {'state': state, 'trend': trend, 'frames': frames, 'time': m15p.index[-1], 'risk': risk,
            'price': float(m15p.close.iloc[-1]), 'signal': None,
