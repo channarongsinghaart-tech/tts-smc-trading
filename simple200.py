@@ -135,6 +135,21 @@ def context(d1p, h4p, h1p):
     return {'dist_d1': dist_d1, 'slope_h4': slope_h4, 'adx_h4': adx4[hi_]}
 
 
+def monthly_from_daily(d1):
+    """แท่งรายเดือน (MN) สร้างจากแท่ง D1"""
+    return d1.resample('MS').agg({'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'}).dropna()
+
+
+def mn_side_asof(d1p, target_close):
+    """ฝั่งของราคาเทียบ SMA200 รายเดือน (เฉพาะเดือนที่ปิดแล้ว) ณ เวลา target_close (numpy datetime64 ไม่มี tz)
+    คืน +1/-1 หรือ 0 = ข้อมูลยังไม่พอ 200 เดือน"""
+    mn = prep(monthly_from_daily(d1p[['open', 'high', 'low', 'close']]))
+    closes = (mn.index.tz_localize(None) + pd.offsets.MonthBegin(1)).values
+    cnt = np.searchsorted(closes, target_close, side='right')
+    ok = cnt >= SMA_N
+    return np.where(ok, mn.side.values[np.maximum(cnt - 1, 0)], 0)
+
+
 def signals(h1p, d1s, h4s, entry):
     """คืน +1 (ซื้อ) / -1 (ขาย) / 0 ของแต่ละแท่ง H1"""
     s1 = h1p.side.values
@@ -203,6 +218,7 @@ def run(symbol, d1, h4, h1, entry='cross', exit_mode='trend', max_hold=None, tp_
     d1p, h4p, h1p = prep(d1), prep(h4), prep(h1)
     d1s, h4s, atr4, hc = align(d1p, h4p, h1p)
     ctx = context(d1p, h4p, h1p)
+    mn_s = mn_side_asof(d1p, (h1p.index.tz_localize(None) + pd.Timedelta(hours=1)).values) if filters.get('mn') else None
     sig = signals(h1p, d1s, h4s, entry)
     ready = np.flatnonzero(d1s != 0)
     if len(ready) == 0:
@@ -227,6 +243,8 @@ def run(symbol, d1, h4, h1, entry='cross', exit_mode='trend', max_hold=None, tp_
         if filters.get('min_dist_d1') is not None and not (s * ctx['dist_d1'][i] >= filters['min_dist_d1']):
             continue
         if filters.get('slope_h4') and not (s * ctx['slope_h4'][i] > 0):
+            continue
+        if mn_s is not None and mn_s[i] == -s:            # MN อยู่คนละฝั่ง (0 = ข้อมูลไม่พอ ข้ามเงื่อนไขนี้)
             continue
         risk = SL_ATR_H4 * max(float(atr4[i]), 1e-9)
         entry_px = float(h1p.close.values[i])
