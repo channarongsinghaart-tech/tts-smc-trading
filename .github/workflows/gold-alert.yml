@@ -1,8 +1,8 @@
-name: Gold Alert M15
+name: Gold Alert H1
 
 on:
   schedule:
-    - cron: "2,17,32,47 * * * *"   # ทุก 15 นาที (2 นาทีหลังแท่ง M15 ปิด) ตัวสคริปต์เช็กช่วงเวลาที่ตั้งไว้เอง
+    - cron: "2,17,32,47 * * * *"   # ทุก 15 นาที ตัวสคริปต์เช็กช่วงเวลาที่ตั้งไว้เอง
   workflow_dispatch:
 
 permissions:
@@ -31,11 +31,11 @@ jobs:
       - name: Restore alert state
         uses: actions/cache@v4
         with:
-          path: alert_m15_state.json
-          key: alert-m15-${{ github.run_id }}
-          restore-keys: alert-m15-
+          path: alert_h1_state.json
+          key: alert-h1-${{ github.run_id }}
+          restore-keys: alert-h1-
 
-      - name: Run gold alert (M15)
+      - name: Run gold alert (H1)
         env:
           TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
@@ -43,7 +43,7 @@ jobs:
           LOCAL_TZ: "America/Edmonton"   # เวลา Alberta (ปรับเวลาออมแสงให้อัตโนมัติ)
           ACTIVE_START: "04:00"          # เริ่มสแกน (เวลาท้องถิ่น)
           ACTIVE_END: "21:30"            # หยุดสแกน (เวลาท้องถิ่น)
-          ACCOUNT_USD: "300"               # ใส่ทุนบัญชี (USD) เพื่อให้คำนวณ lot ให้ เช่น "5000"
+          ACCOUNT_USD: "1000"            # ทุนบัญชี (USD) ใช้คำนวณ lot
           RISK_PCT: "0.5"                # เสี่ยงกี่ % ต่อไม้
           BROKER_SYMBOL: "XAUUSDm"
-        run: python alert_m15.py
+        run: python alert_h1.py
