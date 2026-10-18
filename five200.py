@@ -1,9 +1,11 @@
-"""ระบบทอง SMA200 หลายกรอบ: D1 > H4 > H1 แล้วเข้าที่ M15
+"""ระบบทอง SMA200 (ระบบหลัก): D1 + H4 อยู่ฝั่งเดียวกันของเส้น 200 แล้วเข้าเมื่อแท่ง H1 ปิดข้ามเส้น 200
+SL 1.5 x ATR(H4) | TP 2R | ถือนานสุด 48 ชม. | ไม่เปิดไม้ทองช่วงพักตลาด 20:58-22:00 UTC และชั่วโมงสุดท้ายวันศุกร์
 
-ทิศ      : D1 และ H4 อยู่ฝั่งเดียวกันของ SMA200 + H1 ต้องอยู่ฝั่งเดียวกันด้วย
-จุดเข้า   : แท่ง M15 ปิดข้ามเส้น SMA200(M15) กลับมาฝั่งเดียวกับกรอบใหญ่ทั้งหมด
-SL / TP  : SL 1.5 x ATR(H4) | TP 2R | ถือนานสุด 48 ชม. (ปิดก่อนตลาดหยุดสุดสัปดาห์)
-ใช้เฉพาะแท่งที่ปิดแล้ว | ทองไม่เข้าตอนตลาดปิด/พัก (20:58-22:00 UTC) และชั่วโมงสุดท้ายวันศุกร์ | หักสเปรดและค่าข้ามคืนตามจริง
+ระบบทดลอง (เทียบใน Backtest เท่านั้น): "สวนเส้น 200 + จุดกลับตัว"
+  ราคาอยู่ใต้เส้น 200 -> รอจุดกลับตัวขึ้นแล้วซื้อ | อยู่เหนือเส้น -> รอจุดกลับตัวลงแล้วขาย
+  จุดกลับตัว (H1): ทำจุดต่ำสุดใหม่ของ 10 แท่งภายใน 3 แท่งล่าสุด แล้วปิดแท่งเขียวทะลุ High แท่งก่อนหน้า (ฝั่งขายกลับกัน)
+  SL เลยจุดกลับตัว 0.2 ATR(H1) (ต้องอยู่ระหว่าง 0.5-3 ATR) | TP 2R | ถือนานสุด 48 ชม.
+  ใต้/เหนือเส้น วัด 2 แบบ: 'd1h4' = D1 และ H4 อยู่ฝั่งเดียวกัน | 'h1' = เส้น 200 ของ H1
 """
 import math
 import numpy as np
@@ -12,113 +14,97 @@ import m1_swing_scanner as core
 import simple200 as S
 
 TFS = ('D1', 'H4', 'H1', 'M15')
-SL_ATR_H4 = 1.5
+SL_ATR_H4 = S.SL_ATR_H4
 TP_R = 2.0
 MAX_HOLD_H = 48
-FRESH_BARS = 4                 # สัญญาณ M15 ที่เกิดภายใน 4 แท่งล่าสุด (1 ชม.) ถือว่ายังสด
-HOUR_NS = 3_600_000_000_000
-
-
-def load_history(symbol, m15_pages=4):
-    m15 = S.history(symbol, '15min', 5000, m15_pages)
-    days = (m15.index[-1] - m15.index[0]).days + 2
-    h1 = S.history(symbol, '1h', 5000, max(1, math.ceil((days * 24 + 260) / 5000)))
-    h4 = S.history(symbol, '4h', 5000, max(1, math.ceil((days * 6 + 260) / 5000)))
-    d1 = S.history(symbol, '1day', min(5000, days + 300))
-    return d1, h4, h1, m15
+FRESH_H1 = 2                     # สัญญาณจากแท่ง H1 ภายใน 2 แท่งล่าสุด ถือว่ายังสด
+MAIN_FILTERS = {'no_break': True}
+REV_LOOKBACK, REV_RECENT, REV_BUF_ATR = 10, 3, 0.2
+REV_MIN_RISK, REV_MAX_RISK = 0.5, 3.0
+REV_NAMES = {'d1h4': 'สวนเส้น 200 (D1+H4) + จุดกลับตัว H1', 'h1': 'สวนเส้น 200 (H1) + จุดกลับตัว H1'}
+MAIN_NAME = 'ตามเทรนด์: H1 ข้ามเส้น 200 (ระบบหลัก)'
 
 
 def no_entry_time(symbol, close_t):
-    """ช่วงที่เปิดไม้ทองจริงไม่ได้/ไม่ควรเปิด: พักตลาด 20:58-22:00 UTC, ชั่วโมงสุดท้ายก่อนปิดวันศุกร์, ตลาดปิด"""
-    if symbol != 'XAU/USD':
-        return False
-    hm = close_t.hour * 60 + close_t.minute
-    if 20 * 60 + 58 <= hm < 22 * 60:
-        return True
-    if close_t.dayofweek == 4 and hm >= 20 * 60:
-        return True
-    return S.gold_closed(close_t - pd.Timedelta(minutes=15))
+    return S.no_entry_time(symbol, close_t)
 
 
-def _asof(frame_p, offset, target):
-    closes = (frame_p.index.tz_localize(None) + offset).values
-    cnt = np.searchsorted(closes, target, side='right')
-    return cnt
+def run_main(symbol, d1, h4, h1):
+    return S.run(symbol, d1, h4, h1, 'cross', 'tp', max_hold=MAX_HOLD_H, tp_r=TP_R, filters=MAIN_FILTERS)
 
 
-def build(d1, h4, h1, m15):
-    """คำนวณสถานะทุกกรอบ ณ เวลาปิดของแต่ละแท่ง M15 และสัญญาณเข้า"""
-    d1p, h4p, h1p, m15p = S.prep(d1), S.prep(h4), S.prep(h1), S.prep(m15)
-    target = (m15p.index.tz_localize(None) + pd.Timedelta(minutes=15)).values
-    side = {}
-    for name, fp, off in (('D1', d1p, pd.Timedelta(days=1)), ('H4', h4p, pd.Timedelta(hours=4)),
-                          ('H1', h1p, pd.Timedelta(hours=1))):
-        cnt = _asof(fp, off, target)
-        side[name] = np.where(cnt >= S.SMA_N, fp.side.values[np.maximum(cnt - 1, 0)], 0)
-        if name == 'H4':
-            atr4 = h4p.ATR.values[np.maximum(cnt - 1, 0)]
-    trend = np.where((side['D1'] == side['H4']) & (side['D1'] != 0) & (side['H1'] == side['D1']), side['D1'], 0)
-    s15 = m15p.side.values
-    prev = np.r_[0, s15[:-1]]
-    sig = np.where((trend != 0) & (s15 == trend) & (prev == -trend), trend, 0).astype(int)
-    return {'m15p': m15p, 'side': side, 'trend': trend, 'sig': sig, 'atr4': atr4}
+# ---------------- ระบบทดลอง: สวนเส้น 200 + จุดกลับตัว ----------------
+def reversal_signals(d1p, h4p, h1p, mode='d1h4'):
+    d1s, h4s, _, _ = S.align(d1p, h4p, h1p)
+    o, h, l, c, atr1 = (h1p[k].values for k in ('open', 'high', 'low', 'close', 'ATR'))
+    low_n = pd.Series(l).rolling(REV_LOOKBACK).min().values
+    high_n = pd.Series(h).rolling(REV_LOOKBACK).max().values
+    low_r = pd.Series(l).rolling(REV_RECENT).min().values
+    high_r = pd.Series(h).rolling(REV_RECENT).max().values
+    prev_h, prev_l = np.r_[np.nan, h[:-1]], np.r_[np.nan, l[:-1]]
+    if mode == 'd1h4':
+        below, above = (d1s == -1) & (h4s == -1), (d1s == 1) & (h4s == 1)
+    else:
+        below, above = h1p.side.values == -1, h1p.side.values == 1
+    buy = below & (low_r <= low_n) & (c > prev_h) & (c > o)
+    sell = above & (high_r >= high_n) & (c < prev_l) & (c < o)
+    risk = np.where(buy, c - (low_n - REV_BUF_ATR * atr1), np.where(sell, (high_n + REV_BUF_ATR * atr1) - c, np.nan))
+    sig = np.where(buy, 1, np.where(sell, -1, 0))
+    bad = ~np.isfinite(risk) | (risk < REV_MIN_RISK * atr1) | (risk > REV_MAX_RISK * atr1)
+    return np.where(bad, 0, sig).astype(int), risk
 
 
-def run(symbol, d1, h4, h1, m15, tp_r=TP_R, max_hold=MAX_HOLD_H, cut=None):
-    b = build(d1, h4, h1, m15)
-    m15p, sig, atr4 = b['m15p'], b['sig'], b['atr4']
-    idx = m15p.index
+def run_reversal(symbol, d1, h4, h1, mode='d1h4', cut=None, start=None):
+    d1p, h4p, h1p = S.prep(d1), S.prep(h4), S.prep(h1)
+    sig, risk_arr = reversal_signals(d1p, h4p, h1p, mode)
+    idx = h1p.index
     tns = idx.as_unit('ns').asi8
-    ready = np.flatnonzero((b['side']['D1'] != 0) & (b['side']['H4'] != 0) & (b['side']['H1'] != 0))
-    if len(ready) == 0:
-        return pd.DataFrame()
     if cut is None:
+        d1s = S.align(d1p, h4p, h1p)[0]
+        ready = np.flatnonzero(d1s != 0)
+        if len(ready) == 0:
+            return pd.DataFrame()
         t0, t1 = idx[ready[0]], idx[-1]
         cut = t0 + (t1 - t0) * (1 - S.TEST_FRAC)
+        start = t0 if start is None else start
     z = np.zeros(len(idx))
     trades, free = [], 0
     for i in np.flatnonzero(sig != 0):
-        if i < free or i >= len(idx) - 1:
+        if i < free or i >= len(idx) - 1 or (start is not None and idx[i] < start):
             continue
-        if symbol == 'XAU/USD' and S.gold_closed(idx[i]):
+        close_t = idx[i] + pd.Timedelta(hours=1)
+        if (symbol == 'XAU/USD' and S.gold_closed(idx[i])) or no_entry_time(symbol, close_t):
             continue
-        if no_entry_time(symbol, idx[i] + pd.Timedelta(minutes=15)) or (tns[i + 1] - tns[i]) > 6 * HOUR_NS:
+        if (tns[i + 1] - tns[i]) > 6 * 3_600_000_000_000:
             continue
-        s = int(sig[i])
-        risk = SL_ATR_H4 * max(float(atr4[i]), 1e-9)
-        entry_px = float(m15p.close.values[i])
-        j, px, why = S.simulate(m15p, i, s, risk, 'tp', z, z, max_hold, tp_r, False)
+        s, risk = int(sig[i]), float(risk_arr[i])
+        entry = float(h1p.close.values[i])
+        j, px, why = S.simulate(h1p, i, s, risk, 'tp', z, z, MAX_HOLD_H, TP_R, False)
         side = 'LONG' if s == 1 else 'SHORT'
-        t_in, t_out = idx[i] + pd.Timedelta(minutes=15), idx[j] + pd.Timedelta(minutes=15)
-        nights = S.rollover_units(symbol, t_in, t_out)
-        swap_r = entry_px * S.SWAP_PCT_DAY[symbol][side] / 100 * nights / risk
-        r = s * (px - entry_px) / risk
-        trades.append({'symbol': symbol, 'time': idx[i], 'period': S.DEV if idx[i] < cut else S.TEST,
-                       'dir': side, 'entry': entry_px, 'exit': float(px), 'risk': risk, 'exit_time': idx[j],
-                       'result': why, 'days': (idx[j] - idx[i]).total_seconds() / 86400, 'nights': nights,
-                       'R_gross': r, 'swap_R': swap_r, 'R_net': r - S.SPREAD[symbol] / risk - swap_r})
+        nights = S.rollover_units(symbol, close_t, idx[j] + pd.Timedelta(hours=1))
+        swap_r = entry * S.SWAP_PCT_DAY[symbol][side] / 100 * nights / risk
+        r = s * (px - entry) / risk
+        trades.append({'symbol': symbol, 'time': idx[i], 'period': S.DEV if idx[i] < cut else S.TEST, 'dir': side,
+                       'entry': entry, 'exit': float(px), 'risk': risk, 'exit_time': idx[j], 'result': why,
+                       'days': (idx[j] - idx[i]).total_seconds() / 86400, 'nights': nights, 'R_gross': r,
+                       'swap_R': swap_r, 'R_net': r - S.SPREAD[symbol] / risk - swap_r})
         free = j + 1
     return pd.DataFrame(trades)
 
 
 def compare(symbol, frames):
-    """เทียบจุดเข้า H1 (ระบบเดิม) กับ M15 (ระบบใหม่) ในช่วงเวลาเดียวกัน (ช่วงที่มีข้อมูล M15)
-    คืน (ตาราง, {ชื่อแบบ: รายการเทรด})"""
-    d1, h4, h1, m15 = frames
-    t0, t1 = m15.index[0] + pd.Timedelta(days=3), m15.index[-1]
+    """เทียบระบบหลัก (ตามเทรนด์) กับระบบทดลองสวนเส้น 200 ทั้ง 2 แบบ บนข้อมูล H1 ชุดเดียวกัน
+    คืน (ตาราง, {ชื่อ: รายการเทรด})"""
+    d1, h4, h1 = frames
+    main = run_main(symbol, d1, h4, h1)
+    d1p, h4p, h1p = S.prep(d1), S.prep(h4), S.prep(h1)
+    ready = np.flatnonzero(S.align(d1p, h4p, h1p)[0] != 0)
+    t0, t1 = h1p.index[ready[0]], h1p.index[-1]
     cut = t0 + (t1 - t0) * (1 - S.TEST_FRAC)
-    rows, sets = [], {}
-    for label, kind in (('H1 ข้ามเส้น 200 (ระบบเดิม)', 'H1'), ('M15 ข้ามเส้น 200 (ระบบใหม่)', 'M15')):
-        if kind == 'H1':
-            t = S.run(symbol, d1, h4, h1, 'cross', 'tp', max_hold=MAX_HOLD_H, tp_r=TP_R)
-        else:
-            t = run(symbol, d1, h4, h1, m15, cut=cut)
-        if len(t):
-            t = t[t.time >= t0].copy()
-            t['period'] = np.where(t.time < cut, S.DEV, S.TEST)
-        rows.append(_row(label, t))
-        sets[label] = t
-    return pd.DataFrame(rows), sets
+    sets = {MAIN_NAME: main}
+    for mode, name in REV_NAMES.items():
+        sets[name] = run_reversal(symbol, d1, h4, h1, mode, cut=cut, start=t0)
+    return pd.DataFrame([_row(k, v) for k, v in sets.items()]), sets
 
 
 def _row(label, t):
@@ -135,38 +121,41 @@ def _row(label, t):
             'ผล': S._verdict(dev, test)}
 
 
-# ---------------- สแกนสด ----------------
+# ---------------- สแกนสด (ระบบหลัก) ----------------
 def live(symbol):
     d1 = core.fetch(symbol, '1day', 300)
     h4 = core.fetch(symbol, '4h', 300)
     h1 = core.fetch(symbol, '1h', 300)
     m15 = core.fetch(symbol, '15min', 300)
-    b = build(d1, h4, h1, m15)
-    m15p = b['m15p']
-    frames = {'D1': S.prep(d1), 'H4': S.prep(h4), 'H1': S.prep(h1), 'M15': m15p}
+    d1p, h4p, h1p, m15p = S.prep(d1), S.prep(h4), S.prep(h1), S.prep(m15)
+    d1s, h4s, atr4, _ = S.align(d1p, h4p, h1p)
+    sig_arr = S.signals(h1p, d1s, h4s, 'cross')
+    frames = {'D1': d1p, 'H4': h4p, 'H1': h1p, 'M15': m15p}
     state = {}
     for tf, fp in frames.items():
-        x = fp.iloc[-1] if len(fp) else None
-        enough = x is not None and not np.isnan(x.SMA)
-        state[tf] = {'side': int(x.side) if enough else 0, 'close': float(x.close) if x is not None else float('nan'),
+        x = fp.iloc[-1]
+        enough = not np.isnan(x.SMA)
+        state[tf] = {'side': int(x.side) if enough else 0, 'close': float(x.close),
                      'sma': float(x.SMA) if enough else float('nan'),
-                     'dist_atr': float((x.close - x.SMA) / x.ATR) if enough and x.ATR > 0 else float('nan'),
-                     'time': fp.index[-1] if len(fp) else None}
-    trend = int(b['trend'][-1])
-    base = len(m15p) - FRESH_BARS
-    recent = [k for k in np.flatnonzero(b['sig'][-FRESH_BARS:] != 0)
-              if not no_entry_time(symbol, m15p.index[base + k] + pd.Timedelta(minutes=15))]
-    sig_i = base + int(recent[-1]) if len(recent) else None
-    risk = SL_ATR_H4 * float(b['atr4'][-1])
-    out = {'state': state, 'trend': trend, 'frames': frames, 'time': m15p.index[-1], 'risk': risk,
-           'price': float(m15p.close.iloc[-1]), 'signal': None,
-           'gold_closed': symbol == 'XAU/USD' and S.gold_closed(m15p.index[-1])}
-    if sig_i is not None:
-        s = int(b['sig'][sig_i])
-        entry = float(m15p.close.values[sig_i])
-        out['signal'] = {'dir': s, 'time': m15p.index[sig_i], 'entry': entry, 'sl': entry - s * risk,
-                         'tp': entry + s * TP_R * risk, 'moved_R': s * (out['price'] - entry) / risk,
-                         'close_by': m15p.index[sig_i] + pd.Timedelta(minutes=15) + pd.Timedelta(hours=MAX_HOLD_H)}
+                     'dist_atr': float((x.close - x.SMA) / x.ATR) if enough and x.ATR > 0 else float('nan')}
+    trend = int(d1s[-1]) if d1s[-1] == h4s[-1] else 0
+    price = float(m15p.close.iloc[-1]) if m15p.index[-1] > h1p.index[-1] else float(h1p.close.iloc[-1])
+    last_t = max(m15p.index[-1] + pd.Timedelta(minutes=15), h1p.index[-1] + pd.Timedelta(hours=1))
+    risk = SL_ATR_H4 * float(atr4[-1])
+    out = {'state': state, 'trend': trend, 'frames': frames, 'time': last_t, 'risk': risk, 'price': price,
+           'signal': None, 'h1_close': h1p.index[-1] + pd.Timedelta(hours=1),
+           'gold_closed': symbol == 'XAU/USD' and S.gold_closed(last_t - pd.Timedelta(minutes=1))}
+    n = len(h1p)
+    for i in range(n - 1, n - 1 - FRESH_H1, -1):
+        if sig_arr[i] != 0 and not no_entry_time(symbol, h1p.index[i] + pd.Timedelta(hours=1)):
+            s = int(sig_arr[i])
+            entry = float(h1p.close.values[i])
+            rk = SL_ATR_H4 * float(atr4[i])
+            out['signal'] = {'dir': s, 'time': h1p.index[i] + pd.Timedelta(hours=1), 'entry': entry,
+                             'sl': entry - s * rk, 'tp': entry + s * TP_R * rk, 'risk': rk,
+                             'moved_R': s * (price - entry) / rk,
+                             'close_by': h1p.index[i] + pd.Timedelta(hours=1 + MAX_HOLD_H)}
+            break
     return out
 
 
