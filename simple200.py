@@ -135,6 +135,19 @@ def context(d1p, h4p, h1p):
     return {'dist_d1': dist_d1, 'slope_h4': slope_h4, 'adx_h4': adx4[hi_]}
 
 
+def no_entry_time(symbol, close_t):
+    """ช่วงที่เปิดไม้ทองจริงไม่ได้/ไม่ควรเปิด (close_t = เวลาปิดแท่ง): พักตลาด 20:58-22:00 UTC,
+    ชั่วโมงสุดท้ายก่อนปิดวันศุกร์ และช่วงตลาดปิด"""
+    if symbol != 'XAU/USD':
+        return False
+    hm = close_t.hour * 60 + close_t.minute
+    if 20 * 60 + 58 <= hm < 22 * 60:
+        return True
+    if close_t.dayofweek == 4 and hm >= 20 * 60:
+        return True
+    return gold_closed(close_t - pd.Timedelta(minutes=1))
+
+
 def monthly_from_daily(d1):
     """แท่งรายเดือน (MN) สร้างจากแท่ง D1"""
     return d1.resample('MS').agg({'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'}).dropna()
@@ -245,6 +258,8 @@ def run(symbol, d1, h4, h1, entry='cross', exit_mode='trend', max_hold=None, tp_
         if filters.get('slope_h4') and not (s * ctx['slope_h4'][i] > 0):
             continue
         if mn_s is not None and mn_s[i] == -s:            # MN อยู่คนละฝั่ง (0 = ข้อมูลไม่พอ ข้ามเงื่อนไขนี้)
+            continue
+        if filters.get('no_break') and no_entry_time(symbol, idx[i] + pd.Timedelta(hours=1)):
             continue
         risk = SL_ATR_H4 * max(float(atr4[i]), 1e-9)
         entry_px = float(h1p.close.values[i])
