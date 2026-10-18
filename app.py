@@ -1,4 +1,4 @@
-"""แอปทอง SMA200 หลายกรอบ: D1 > H4 > H1 ทิศเดียวกัน แล้วเข้าที่ M15 (ทองเป็นหลัก)"""
+"""แอปทอง SMA200 หลายกรอบ: D1 + H4 ทิศเดียวกัน แล้วเข้าเมื่อ H1 ปิดข้ามเส้น 200 (ทองเป็นหลัก)"""
 import os
 from zoneinfo import ZoneInfo
 import numpy as np
@@ -13,7 +13,7 @@ import swinglab as L
 
 st.set_page_config(page_title='ทอง SMA200', page_icon='🥇', layout='centered')
 st.title('🥇 ทอง SMA200 หลายกรอบ')
-st.caption('D1 > H4 > H1 อยู่ฝั่งเดียวกันของเส้น 200 แล้วเข้าเมื่อ M15 ปิดข้ามเส้น 200 | SL 1.5×ATR(H4) | '
+st.caption('D1 + H4 อยู่ฝั่งเดียวกันของเส้น 200 แล้วเข้าเมื่อแท่ง H1 ปิดข้ามเส้น 200 | SL 1.5×ATR(H4) | '
            'TP 2R | ถือไม่เกิน 48 ชม.')
 
 
@@ -48,7 +48,7 @@ with st.expander('⚙️ ตั้งค่า (สินทรัพย์ ท�
     sw_xau_s = st.number_input('ค่าข้ามคืนทอง ฝั่งขาย (% ต่อคืน)', value=0.0, step=0.001, format='%.4f')
     sw_btc_l = st.number_input('ค่าข้ามคืน BTC ฝั่งซื้อ (% ต่อคืน)', value=0.0, step=0.001, format='%.4f')
     sw_btc_s = st.number_input('ค่าข้ามคืน BTC ฝั่งขาย (% ต่อคืน)', value=0.0, step=0.001, format='%.4f')
-    pages = st.slider('ข้อมูลสำหรับทดสอบย้อนหลัง (หน้า M15 ละ 5,000 แท่ง ≈ 2.5 เดือนของทอง)', 1, 4, 4)
+    pages = st.slider('ข้อมูลสำหรับทดสอบย้อนหลัง (หน้า H1 ละ 5,000 แท่ง ≈ 10 เดือนของทอง)', 1, 4, 4)
 
 SYM = core.ASSETS[asset_name]
 TZ = ZoneInfo(tz_name)
@@ -74,19 +74,13 @@ def chart(df, n, title, levels=None):
 
 
 @st.cache_data(ttl=120, show_spinner=False)
-def live_cached(symbol, key, ver='five1'):
+def live_cached(symbol, key, ver='h1v1'):
     core.API_KEY = key
     return F.live(symbol)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def m15_history(symbol, key, pages, ver='five1'):
-    core.API_KEY = key
-    return F.load_history(symbol, int(pages))
-
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def h1_history(symbol, key, pages, ver='five1'):
+def h1_history(symbol, key, pages, ver='h1v1'):
     core.API_KEY = key
     return S.load_history(symbol, int(pages))
 
@@ -101,8 +95,8 @@ with tab_now:
         with st.spinner('กำลังดึงข้อมูล D1 / H4 / H1 / M15 ...'):
             res = live_cached(SYM, KEY)
         stt, trend, sig = res['state'], res['trend'], res['signal']
-        st.caption(f'แท่ง M15 ล่าสุดที่ปิดแล้ว: {tstr(res["time"] + pd.Timedelta(minutes=15))} | ราคา {core.fmt(res["price"])} '
-                   f'| ข้อมูลเก็บไว้ 2 นาที กดอัปเดตเพื่อดึงใหม่')
+        st.caption(f'แท่ง H1 ล่าสุดที่ปิดแล้ว: {tstr(res["h1_close"])} | ราคาล่าสุด {core.fmt(res["price"])} '
+                   f'({tstr(res["time"])}) | ข้อมูลเก็บไว้ 2 นาที กดอัปเดตเพื่อดึงใหม่')
 
         # ---- กล่องสถานะหลัก ----
         side_txt = {1: 'ซื้อ', -1: 'ขาย'}
@@ -111,22 +105,20 @@ with tab_now:
         if sig is not None and sig['moved_R'] <= 0.5:
             box = st.success if sig['dir'] > 0 else st.error
             box(f'### {"🟢 สัญญาณซื้อ (BUY)" if sig["dir"] > 0 else "🔴 สัญญาณขาย (SELL)"}\n'
-                f'เกิดเมื่อ {tstr(sig["time"] + pd.Timedelta(minutes=15))} | ราคาไปแล้ว {sig["moved_R"]:+.2f}R จากจุดเข้า')
+                f'แท่ง H1 ปิดเมื่อ {tstr(sig["time"])} | ราคาไปแล้ว {sig["moved_R"]:+.2f}R จากจุดเข้า')
         elif sig is not None:
             st.warning(f'### ⚠️ สัญญาณ{side_txt[sig["dir"]]}เกิดแล้ว แต่ราคาวิ่งไป {sig["moved_R"]:+.2f}R\n'
                        f'เลยจุดเข้ามากเกินครึ่งทางไป TP แนะนำให้ข้ามไม้นี้')
         elif trend:
-            m15_side = stt['M15']['side']
-            if m15_side == trend:
-                st.info(f'### ⏳ ทิศ{side_txt[trend]}: รอรอบถัดไป\nM15 อยู่ฝั่ง{side_txt[trend]}อยู่แล้ว '
+            h1_side = stt['H1']['side']
+            if h1_side == trend:
+                st.info(f'### ⏳ ทิศ{side_txt[trend]}: รอรอบถัดไป\nH1 อยู่ฝั่ง{side_txt[trend]}อยู่แล้ว '
                         f'รอให้ย่อไปอีกฝั่งของเส้น 200 แล้วปิดข้ามกลับมา')
             else:
-                st.info(f'### ⏳ ทิศ{side_txt[trend]}: รอ M15 ปิดข้ามเส้น 200 กลับมา\n'
-                        f'เมื่อแท่ง M15 ปิด{"เหนือ" if trend > 0 else "ใต้"}เส้น 200 จะเป็นสัญญาณ{side_txt[trend]}')
+                st.info(f'### ⏳ ทิศ{side_txt[trend]}: รอ H1 ปิดข้ามเส้น 200 กลับมา\n'
+                        f'เมื่อแท่ง H1 ปิด{"เหนือ" if trend > 0 else "ใต้"}เส้น 200 จะเป็นสัญญาณ{side_txt[trend]}')
         else:
-            d1s, h4s, h1s = stt['D1']['side'], stt['H4']['side'], stt['H1']['side']
-            why = 'D1 กับ H4 อยู่คนละฝั่งเส้น 200' if d1s != h4s else f'H1 ยังอยู่คนละฝั่งกับ D1/H4'
-            st.warning(f'### ⛔ ยังไม่เล่น\n{why}')
+            st.warning('### ⛔ ยังไม่เล่น\nD1 กับ H4 อยู่คนละฝั่งเส้น 200')
 
         # ---- ตารางสถานะทุกกรอบ ----
         rows = ['| กรอบ | สถานะ | ราคา | SMA200 | ห่าง (ATR) |', '|---|---|---|---|---|']
@@ -143,7 +135,7 @@ with tab_now:
         if trend:
             s = sig['dir'] if sig is not None else trend
             entry = sig['entry'] if sig is not None else res['price']
-            risk = res['risk']
+            risk = sig['risk'] if sig is not None else res['risk']
             sl, tp = entry - s * risk, entry + s * F.TP_R * risk
             lot, money = F.lot_size(risk, account, risk_pct) if SYM == 'XAU/USD' else (None, None)
             title = 'แผนเทรดของสัญญาณนี้' if sig is not None else f'ถ้าเกิดสัญญาณ{side_txt[s]}ที่ราคาตอนนี้'
@@ -161,12 +153,12 @@ with tab_now:
             levels = [('Entry', entry, 'white'), ('SL', sl, '#ef5350'), ('TP', tp, '#26a69a')]
 
         # ---- กราฟ ----
-        c1, c2, c3, c4 = st.tabs(['M15 (จุดเข้า)', 'H1', 'H4', 'D1'])
+        c1, c2, c3, c4 = st.tabs(['H1 (จุดเข้า)', 'M15', 'H4', 'D1'])
         fr = res['frames']
         with c1:
-            st.plotly_chart(chart(fr['M15'], 160, f'{asset_name} M15', levels), use_container_width=True)
-        with c2:
             st.plotly_chart(chart(fr['H1'], 160, f'{asset_name} H1', levels), use_container_width=True)
+        with c2:
+            st.plotly_chart(chart(fr['M15'], 160, f'{asset_name} M15', levels), use_container_width=True)
         with c3:
             st.plotly_chart(chart(fr['H4'], 150, f'{asset_name} H4'), use_container_width=True)
         with c4:
@@ -177,48 +169,49 @@ with tab_now:
 
 # ================= ทดสอบย้อนหลัง =================
 with tab_bt:
-    st.caption('ทดสอบระบบใหม่ (เข้าที่ M15) เทียบกับระบบเดิม (เข้าที่ H1) ในช่วงเวลาเดียวกัน หักสเปรดและค่าข้ามคืนแล้ว '
-               '| ครั้งแรกรอ 2-4 นาที (~10 credits)')
-    if st.button('▶️ ทดสอบระบบนี้', use_container_width=True, key='bt'):
+    st.caption('ทดสอบระบบหลัก (ตามเทรนด์ เข้าที่ H1) เทียบกับระบบทดลอง "สวนเส้น 200 + จุดกลับตัว" '
+               '(ใต้เส้นซื้อ เหนือเส้นขาย) บนข้อมูล H1 ชุดเดียวกัน หักสเปรดและค่าข้ามคืนแล้ว | ครั้งแรกรอ 2-4 นาที')
+    if st.button('▶️ ทดสอบระบบ', use_container_width=True, key='bt'):
         try:
             with st.spinner('กำลังดึงข้อมูลและจำลองเทรด ...'):
-                frames = m15_history(SYM, KEY, pages)
+                frames = h1_history(SYM, KEY, pages)
                 table, sets = F.compare(SYM, frames)
-            m15 = frames[3]
-            st.caption(f'ช่วงข้อมูล M15: {m15.index[0]:%d %b %Y} → {m15.index[-1]:%d %b %Y} '
+            h1 = frames[2]
+            st.caption(f'ช่วงข้อมูล H1: {h1.index[0]:%d %b %Y} → {h1.index[-1]:%d %b %Y} '
                        f'(70% แรก = ช่วงพัฒนา, 30% หลัง = ช่วงทดสอบ)')
-            main = sets['M15 ข้ามเส้น 200 (ระบบใหม่)']
-            if len(main) == 0:
-                st.warning('ไม่มีเทรดในช่วงข้อมูลนี้')
-            else:
+            main = sets[F.MAIN_NAME]
+            if len(main):
                 sm = S.stats(main)
-                a, b, c = st.columns(3)
-                a.metric('เทรด', sm['เทรด'])
-                b.metric('ชนะ', f'{sm["ชนะ %"]}%')
-                c.metric('R ต่อเทรด (สุทธิ)', f'{sm["R/เทรด สุทธิ"]:+.2f}')
-                a, b, c = st.columns(3)
-                a.metric('R รวม', f'{sm["R รวม"]:+.1f}')
-                b.metric('PF', sm['PF'])
-                c.metric('ขาดทุนสะสมสูงสุด', f'{sm["ขาดทุนสะสมสูงสุด R"]}R')
+                st.write(f'**{F.MAIN_NAME}**')
+                a1, b1, c1 = st.columns(3)
+                a1.metric('เทรด', sm['เทรด'])
+                b1.metric('ชนะ', f'{sm["ชนะ %"]}%')
+                c1.metric('R ต่อเทรด (สุทธิ)', f'{sm["R/เทรด สุทธิ"]:+.2f}')
+                a1, b1, c1 = st.columns(3)
+                a1.metric('R รวม', f'{sm["R รวม"]:+.1f}')
+                b1.metric('PF', sm['PF'])
+                c1.metric('ขาดทุนสะสมสูงสุด', f'{sm["ขาดทุนสะสมสูงสุด R"]}R')
                 verdict = S._verdict(main[main.period == S.DEV], main[main.period == S.TEST])
                 st.write(f'**ผลทางสถิติ:** {verdict} | ช่วงเชื่อมั่น 95%: {sm["ช่วงเชื่อมั่น 95%"]} R ต่อเทรด')
-                fig = go.Figure()
-                for label, t in sets.items():
-                    if len(t):
-                        tt = t.sort_values('time')
-                        fig.add_trace(go.Scatter(x=tt.exit_time, y=tt.R_net.cumsum(), mode='lines', name=label))
-                fig.update_layout(height=320, margin=dict(l=0, r=0, t=30, b=0), title=dict(text='กำไรสะสม (R หักต้นทุน)', x=0),
-                                  legend=dict(orientation='h', y=-0.2))
-                st.plotly_chart(fig, use_container_width=True)
-            st.write('**เทียบจุดเข้า H1 (เดิม) กับ M15 (ใหม่)**')
+            fig = go.Figure()
+            for label, t in sets.items():
+                if len(t):
+                    tt = t.sort_values('time')
+                    fig.add_trace(go.Scatter(x=tt.exit_time, y=tt.R_net.cumsum(), mode='lines', name=label))
+            fig.update_layout(height=340, margin=dict(l=0, r=0, t=30, b=0), title=dict(text='กำไรสะสม (R หักต้นทุน)', x=0),
+                              legend=dict(orientation='h', y=-0.25))
+            st.plotly_chart(fig, use_container_width=True)
+            st.write('**เทียบระบบหลักกับระบบทดลองสวนเส้น 200**')
             st.dataframe(table, use_container_width=True, hide_index=True)
-            st.caption('เชื่อได้เมื่อ R สุทธิบวกทั้งช่วงพัฒนาและทดสอบ และช่อง "ผล" เป็น ✓ | เทรดน้อยกว่า ~30 รายการยังสรุปไม่ได้')
+            st.caption('เชื่อได้เมื่อ R สุทธิบวกทั้งช่วงพัฒนาและทดสอบ และช่อง "ผล" เป็น ✓ | '
+                       'ระบบทดลองยังไม่ใช้ในการแจ้งเตือน ใช้ดูผลเปรียบเทียบเท่านั้น')
             with st.expander('รายการเทรดทั้งหมด'):
                 for label, t in sets.items():
                     st.write(f'**{label}**')
                     st.dataframe(t, use_container_width=True)
-                if len(main):
-                    st.download_button('ดาวน์โหลดเทรดระบบใหม่ CSV', main.to_csv(index=False), 'm15_trades.csv')
+                    if len(t):
+                        st.download_button(f'ดาวน์โหลด CSV: {label}', t.to_csv(index=False),
+                                           f'trades_{list(sets).index(label) + 1}.csv', key=f'dl_{label}')
         except Exception as e:
             st.error(f'ทดสอบไม่สำเร็จ: {e}')
 
