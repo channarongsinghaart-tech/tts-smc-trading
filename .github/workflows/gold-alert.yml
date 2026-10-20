@@ -43,7 +43,7 @@ jobs:
           LOCAL_TZ: "America/Edmonton"   # เวลา Alberta (ปรับเวลาออมแสงให้อัตโนมัติ)
           ACTIVE_START: "04:00"          # เริ่มสแกน (เวลาท้องถิ่น)
           ACTIVE_END: "21:30"            # หยุดสแกน (เวลาท้องถิ่น)
-          ACCOUNT_USD: "1000"            # ทุนบัญชี (USD) ใช้คำนวณ lot
-          RISK_PCT: "0.5"                # เสี่ยงกี่ % ต่อไม้
+          ACCOUNT_USD: "10000"            # ทุนบัญชี (USD) ใช้คำนวณ lot
+          RISK_PCT: "1"                # เสี่ยงกี่ % ต่อไม้
           BROKER_SYMBOL: "XAUUSDm"
         run: python alert_h1.py
