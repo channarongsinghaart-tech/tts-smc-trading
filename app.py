@@ -11,8 +11,8 @@ import simple200 as S
 import five200 as F
 import swinglab as L
 
-st.set_page_config(page_title='ทอง SMA200', page_icon='🥇', layout='centered')
-st.title('🥇 ทอง SMA200 หลายกรอบ')
+st.set_page_config(page_title='ทอง & BTC', page_icon='🥇', layout='centered')
+PAGE = st.radio('เลือกสินทรัพย์', ['🥇 ทอง', '₿ BTC'], horizontal=True, label_visibility='collapsed', key='page')
 
 
 def get_key():
@@ -34,11 +34,17 @@ if not KEY:
 core.API_KEY = KEY
 core.CREDIT_BUDGET = 10 ** 9
 
+if PAGE.startswith('₿'):
+    import btc_page
+    btc_page.render(KEY)
+    st.stop()
+
+st.title('🥇 ทอง SMA200 หลายกรอบ')
+
 # ---------------- ตั้งค่า ----------------
-with st.expander('⚙️ ตั้งค่า (กรอบจุดเข้า สินทรัพย์ ทุน ความเสี่ยง สเปรด ค่าข้ามคืน)'):
+with st.expander('⚙️ ตั้งค่า (กรอบจุดเข้า ทุน ความเสี่ยง สเปรด ค่าข้ามคืน)'):
     ENTRY = st.selectbox('กรอบจุดเข้า', list(F.ENTRY_TFS), index=list(F.ENTRY_TFS).index(F.DEFAULT_ENTRY))
     REQ_H1 = st.checkbox('ให้ H1 อยู่ฝั่งเดียวกันด้วย (ใช้กับจุดเข้า M30)', value=False) if ENTRY == 'M30' else False
-    asset_name = st.selectbox('สินทรัพย์', ['Gold XAU/USD', 'Bitcoin BTC/USD'], index=0)
     tz_name = st.selectbox('เขตเวลาของคุณ', ['America/Edmonton', 'Asia/Bangkok', 'UTC'])
     account = st.number_input('ทุนในบัญชี (USD) ใช้คำนวณขนาดไม้', value=5000.0, step=500.0)
     risk_pct = st.number_input('เสี่ยงต่อไม้ (% ของทุน)', value=0.5, step=0.1, format='%.2f')
@@ -53,7 +59,8 @@ with st.expander('⚙️ ตั้งค่า (กรอบจุดเข้�
 st.caption(f'D1 + H4 อยู่ฝั่งเดียวกันของเส้น 200{" + H1 ฝั่งเดียวกัน" if REQ_H1 else ""} แล้วเข้าเมื่อแท่ง {ENTRY} '
            f'ปิดข้ามเส้น 200 | SL 1.5×ATR(H4) | TP 2R | ถือไม่เกิน 48 ชม. | เปลี่ยนกรอบจุดเข้าได้ใน ⚙️ ตั้งค่า')
 
-SYM = core.ASSETS[asset_name]
+asset_name = 'Gold XAU/USD'
+SYM = 'XAU/USD'
 TZ = ZoneInfo(tz_name)
 S.SPREAD['XAU/USD'], S.SPREAD['BTC/USD'] = float(sp_xau), float(sp_btc)
 S.SWAP_PCT_DAY['XAU/USD'] = {'LONG': float(sw_xau_l), 'SHORT': float(sw_xau_s)}
