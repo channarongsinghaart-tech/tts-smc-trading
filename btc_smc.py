@@ -170,6 +170,8 @@ def run(d1, h4, h1, sr=False, symbol=SYMBOL):
     for i in np.flatnonzero(sig != 0):
         if i < free or i >= len(idx) - 1 or (tns[i + 1] - tns[i]) > 6 * 3_600_000_000_000:
             continue
+        if symbol == 'XAU/USD' and (S.gold_closed(idx[i]) or S.no_entry_time(symbol, idx[i] + OFFSET['H1'])):
+            continue                                       # ทอง: ไม่เข้าตอนตลาดปิด/พัก และชั่วโมงสุดท้ายวันศุกร์
         s, rk = int(sig[i]), float(risk_arr[i])
         entry = float(h1p.close.values[i])
         j, px, why = S.simulate(h1p, i, s, rk, 'tp', z, z, MAX_HOLD_H, TP_R, False)
