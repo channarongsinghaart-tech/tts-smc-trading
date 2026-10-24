@@ -10,6 +10,7 @@ import m1_swing_scanner as core
 import simple200 as S
 import five200 as F
 import swinglab as L
+import btc_smc as B
 
 st.set_page_config(page_title='ทอง & BTC', page_icon='🥇', layout='centered')
 PAGE = st.radio('เลือกสินทรัพย์', ['🥇 ทอง', '₿ BTC'], horizontal=True, label_visibility='collapsed', key='page')
@@ -254,6 +255,37 @@ with tab_tools:
                     st.dataframe(S.compare_filters(SYM, fr_h1), use_container_width=True, hide_index=True)
                     st.dataframe(S.diagnose(S.run(SYM, *fr_h1, entry='cross', exit_mode='tp', tp_r=2.0, max_hold=48)),
                                  use_container_width=True, hide_index=True)
+            except Exception as e:
+                st.error(f'ไม่สำเร็จ: {e}')
+    with st.expander('🧩 ทดสอบสูตร SMC + แนวรับ/แนวต้าน (แบบเดียวกับ BTC) กับทอง'):
+        st.caption('ใช้กฎและตัวเลขเดียวกับหน้า BTC ทุกอย่าง ไม่ปรับให้เข้ากับทอง (ทดสอบข้ามตลาด) | '
+                   'เทียบกับระบบ SMA200 เข้าที่ H1 บนข้อมูล H1 ชุดเดียวกัน ~2.8 ปี')
+        if st.button('รัน', use_container_width=True, key='smc_gold'):
+            try:
+                with st.spinner('กำลังทดสอบ ...'):
+                    fr_g = h1_history('XAU/USD', KEY, 4)
+                    tab_smc, sets_smc = B.compare(fr_g, symbol='XAU/USD')
+                    base = F.run_entry('XAU/USD', fr_g[0], fr_g[1], fr_g[2], fr_g[2], 'H1')
+                    sets_all = {'SMA200 เข้าที่ H1 (ระบบหลักทอง)': base, **sets_smc}
+                    tab_all = pd.concat([pd.DataFrame([F._row('SMA200 เข้าที่ H1 (ระบบหลักทอง)', base)]), tab_smc],
+                                        ignore_index=True)
+                st.dataframe(tab_all, use_container_width=True, hide_index=True)
+                fig = go.Figure()
+                for label, t in sets_all.items():
+                    if len(t):
+                        tt = t.sort_values('time')
+                        fig.add_trace(go.Scatter(x=tt.exit_time, y=tt.R_net.cumsum(), mode='lines', name=label))
+                fig.update_layout(height=320, margin=dict(l=0, r=0, t=30, b=0), legend=dict(orientation='h', y=-0.25),
+                                  title=dict(text='กำไรสะสม (R หักต้นทุน)', x=0))
+                st.plotly_chart(fig, use_container_width=True)
+                if len(base) and len(sets_smc[B.NAMES[True]]):
+                    same = sets_smc[B.NAMES[True]].time.dt.floor('D').isin(base.time.dt.floor('D')).mean() * 100
+                    st.caption(f'ไม้ของ SMC + S/R ที่เกิดวันเดียวกับไม้ของระบบหลัก: {same:.0f}% '
+                               '(ยิ่งน้อย ยิ่งเป็นไม้คนละชุด ใช้ร่วมกันได้)')
+                for k, (label, t) in enumerate(sets_smc.items()):
+                    if len(t):
+                        st.download_button(f'ดาวน์โหลด CSV: {label}', t.to_csv(index=False), f'gold_smc_{k + 1}.csv',
+                                           key=f'smc_dl_{k}')
             except Exception as e:
                 st.error(f'ไม่สำเร็จ: {e}')
     with st.expander('🔬 ห้องทดลองสวิง 4 สูตร'):
