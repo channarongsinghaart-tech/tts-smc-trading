@@ -1,4 +1,4 @@
-"""หน้า EUR/USD: ระบบ SMA200 แบบเดียวกับทอง + แผงโครงสร้างตลาด (SMC) + Backtest"""
+"""หน้า EUR/USD: ระบบสวิงในกรอบ (Bollinger + ADX) หรือ SMA200 แบบทอง + แผงโครงสร้างตลาด (SMC) + Backtest"""
 import math
 from zoneinfo import ZoneInfo
 import numpy as np
@@ -10,11 +10,33 @@ import m1_swing_scanner as core
 import simple200 as S
 import five200 as F
 import btc_smc as B
+import swinglab as L
 from btc_page import chart, WORD
 
 PAIRS = {'EUR/USD': {'broker': 'EURUSD', 'quote_usd': None, 'spread_pips': 1.2, 'swl': 0.0, 'sws': 0.0}}
 PIP, POINT = 0.0001, 0.00001
 fmt = lambda v: f'{v:.5f}'
+RANGE, TREND = 'สวิงในกรอบ (Bollinger + ADX)', 'SMA200 (แบบเดียวกับทอง)'
+
+
+def range_state(fr, pair, tp_r):
+    """สถานะระบบสวิงในกรอบ (สูตร M2) ณ แท่ง H1 ล่าสุดที่ปิดแล้ว"""
+    d1, h4, h1 = (fr[k][['open', 'high', 'low', 'close']] for k in ('D1', 'H4', 'H1'))
+    f, h1p = L.features(d1, h4, h1)
+    sig, risk = L.model_signals(f, 'M2')
+    x = f.iloc[-1]
+    out = {'f': f, 'adx4': float(x.adx4), 'range_on': bool(x.adx4 < L.ADX_RANGE), 'up': float(x.bb_up),
+           'lo': float(x.bb_lo), 'close': float(x.close), 'signal': None}
+    out['mid'] = (out['up'] + out['lo']) / 2
+    n = len(f)
+    for i in range(n - 1, n - 3, -1):
+        t_close = f.index[i] + pd.Timedelta(hours=1)
+        if sig[i] != 0 and not S.no_entry_time(pair, t_close):
+            s, rk, e = int(sig[i]), float(risk[i]), float(f.close.values[i])
+            out['signal'] = {'dir': s, 'time': t_close, 'entry': e, 'risk': rk, 'sl': e - s * rk, 'tp': e + s * tp_r * rk,
+                             'close_by': t_close + pd.Timedelta(hours=L.HOLD_H)}
+            break
+    return out
 
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -54,6 +76,8 @@ def render(KEY):
     pair = 'EUR/USD'
     P = PAIRS[pair]
     with st.expander(f'⚙️ ตั้งค่า {pair} (บัญชี ขนาดสัญญา สเปรด ค่าข้ามคืน)'):
+        system = st.selectbox('ระบบสัญญาณ', [RANGE, TREND], key='fx_sys')
+        tp_r = {'1R': 1.0, '1.5R': 1.5}[st.selectbox('TP ของสวิงในกรอบ', ['1R', '1.5R'], key='fx_tp')]
         entry = st.selectbox('กรอบจุดเข้า (ระบบ SMA200)', list(F.ENTRY_TFS), index=list(F.ENTRY_TFS).index('H1'), key='fx_entry')
         tz = ZoneInfo(st.selectbox('เขตเวลาของคุณ', ['America/Edmonton', 'Asia/Bangkok', 'UTC'], key='fx_tz'))
         ccy = 'USC' if st.radio('ประเภทบัญชี', ['USC (บัญชีเซ็นต์)', 'USD (บัญชีปกติ)'], horizontal=True,
@@ -67,8 +91,12 @@ def render(KEY):
         swl = st.number_input('Swap long (จุด ตามใน MT5)', value=P['swl'], step=0.5, key=f'fx_swl_{pair}')
         sws = st.number_input('Swap short (จุด ตามใน MT5)', value=P['sws'], step=0.5, key=f'fx_sws_{pair}')
         pages = st.slider('ข้อมูลทดสอบย้อนหลัง (หน้า H1 ละ 5,000 แท่ง ≈ 8 เดือน)', 1, 4, 4, key='fx_pages')
-    st.caption(f'ระบบ SMA200 เดียวกับทอง: D1 + H4 ฝั่งเดียวกันของเส้น 200 แล้วเข้าเมื่อ {entry} ปิดข้ามเส้น 200 | '
-               'SL 1.5×ATR(H4) | TP 2R | ถือไม่เกิน 48 ชม. | ไม่เข้าช่วงตัดรอบ 20:45-22:00 UTC และชั่วโมงสุดท้ายวันศุกร์')
+    if system == RANGE:
+        st.caption(f'สวิงในกรอบ: ใช้เมื่อ ADX(H4) < 20 (ไม่มีเทรนด์) | H1 หลุดกรอบ Bollinger(20,2) แล้วปิดกลับเข้ามา → เข้าสวนไปหาค่ากลาง '
+                   f'| SL 1×ATR(H4) | TP {tp_r:g}R | ถือไม่เกิน 48 ชม. | ระบบทดลอง ดูผลในแท็บทดสอบก่อนใช้')
+    else:
+        st.caption(f'ระบบ SMA200 เดียวกับทอง: D1 + H4 ฝั่งเดียวกันของเส้น 200 แล้วเข้าเมื่อ {entry} ปิดข้ามเส้น 200 | '
+                   'SL 1.5×ATR(H4) | TP 2R | ถือไม่เกิน 48 ชม. | ไม่เข้าช่วงตัดรอบ 20:45-22:00 UTC และชั่วโมงสุดท้ายวันศุกร์')
     S.SPREAD[pair] = float(sp) * PIP
     tstr = lambda ts: f'{ts.tz_convert(tz):%a %d %b %H:%M} ({ts:%H:%M} UTC)'
     side_txt = {1: 'ซื้อ', -1: 'ขาย'}
@@ -89,7 +117,27 @@ def render(KEY):
                        f'| ข้อมูลเก็บไว้ 2 นาที')
             if S.fx_closed(res['time'] - pd.Timedelta(minutes=1)):
                 st.info('🌙 ตลาด Forex ปิดอยู่ (เปิดอาทิตย์ 21:05 UTC)')
-            if sig is not None and sig['moved_R'] <= 0.5:
+            rs = range_state(res['frames'], pair, tp_r)
+            if system == RANGE:
+                rsig = rs['signal']
+                if rsig is not None:
+                    moved = rsig['dir'] * (res['price'] - rsig['entry']) / rsig['risk']
+                    if moved <= 0.5:
+                        box = st.success if rsig['dir'] > 0 else st.error
+                        box(f'### {"🟢 สัญญาณซื้อ (BUY)" if rsig["dir"] > 0 else "🔴 สัญญาณขาย (SELL)"} {P["broker"]} — สวิงในกรอบ\n'
+                            f'ปิดกลับเข้ากรอบ Bollinger เมื่อ {tstr(rsig["time"])} | ราคาไปแล้ว {moved:+.2f}R')
+                    else:
+                        st.warning(f'### ⚠️ สัญญาณ{side_txt[rsig["dir"]]}เกิดแล้ว แต่ราคาวิ่งไป {moved:+.2f}R\nแนะนำให้ข้ามไม้นี้')
+                elif not rs['range_on']:
+                    st.warning(f'### ⛔ ยังไม่เล่น: ตลาดมีเทรนด์\nADX(H4) = {rs["adx4"]:.1f} (ต้องต่ำกว่า 20 ถึงจะเทรดสวิงในกรอบ)')
+                elif rs['close'] > rs['up']:
+                    st.info(f'### ⏳ หลุดกรอบบนแล้ว รอปิดกลับเข้ามา → ขาย\nรอแท่ง H1 ปิดเป็นแท่งแดงใต้ {fmt(rs["up"])} | ADX(H4) {rs["adx4"]:.1f}')
+                elif rs['close'] < rs['lo']:
+                    st.info(f'### ⏳ หลุดกรอบล่างแล้ว รอปิดกลับเข้ามา → ซื้อ\nรอแท่ง H1 ปิดเป็นแท่งเขียวเหนือ {fmt(rs["lo"])} | ADX(H4) {rs["adx4"]:.1f}')
+                else:
+                    st.info(f'### ⏳ ตลาดไม่มีเทรนด์ รอราคาหลุดกรอบ\nกรอบบน {fmt(rs["up"])} | กลาง {fmt(rs["mid"])} | ล่าง {fmt(rs["lo"])} '
+                            f'| ADX(H4) {rs["adx4"]:.1f}')
+            elif sig is not None and sig['moved_R'] <= 0.5:
                 box = st.success if sig['dir'] > 0 else st.error
                 box(f'### {"🟢 สัญญาณซื้อ (BUY)" if sig["dir"] > 0 else "🔴 สัญญาณขาย (SELL)"} {P["broker"]}\n'
                     f'แท่ง {entry} ปิดเมื่อ {tstr(sig["time"])} | ราคาไปแล้ว {sig["moved_R"]:+.2f}R จากจุดเข้า')
@@ -114,7 +162,19 @@ def render(KEY):
             st.markdown('\n'.join(rows))
 
             levels = None
-            if trend or sig is not None:
+            if system == RANGE and rs['signal'] is not None:
+                rsig = rs['signal']
+                lot, money, real, per_lot = lot_calc(rsig['risk'], contract, q2usd, balance, ccy, risk_pct)
+                plan = ['**แผนเทรดของสัญญาณนี้ (สวิงในกรอบ)**', f'- ราคาเข้า: **{fmt(rsig["entry"])}**',
+                        f'- SL: **{fmt(rsig["sl"])}** ({rsig["risk"] / PIP:.1f} pip)',
+                        f'- TP {tp_r:g}R: **{fmt(rsig["tp"])}** ({tp_r * rsig["risk"] / PIP:.1f} pip) | ค่ากลางกรอบ {fmt(rs["mid"])}',
+                        f'- ถ้ายังไม่ถึง TP/SL ให้ปิดภายใน: {tstr(rsig["close_by"])} หรือก่อนตลาดปิดวันศุกร์']
+                if lot is not None:
+                    plan.append(f'- ขนาดไม้แนะนำ: **{max(lot, 0.01):.2f} lot** เสี่ยงจริงราว {money_txt(real, ccy)}'
+                                + (' ⚠️ เกินแผน' if lot < 0.01 else ''))
+                st.markdown('\n'.join(plan))
+                levels = [('Entry', rsig['entry'], 'white'), ('SL', rsig['sl'], '#ef5350'), ('TP', rsig['tp'], '#26a69a')]
+            elif system == TREND and (trend or sig is not None):
                 s = sig['dir'] if sig is not None else trend
                 e = sig['entry'] if sig is not None else res['price']
                 rk = sig['risk'] if sig is not None else res['risk']
@@ -156,13 +216,23 @@ def render(KEY):
             zones = [(z[0], z[1], z[2], '#ef5350') for z in smc['resistance']] + \
                     [(z[0], z[1], z[2], '#26a69a') for z in smc['support']]
             fr = res['frames']
-            other = 'M30' if entry == 'H1' else 'H1'
-            c1, c2, c3, c4 = st.tabs([f'{entry} (จุดเข้า)', other, 'H4', 'D1'])
+            etf = 'H1' if system == RANGE else entry
+            other = 'M30' if etf == 'H1' else 'H1'
+            c1, c2, c3, c4 = st.tabs([f'{etf} (จุดเข้า)', other, 'H4', 'D1'])
             with c1:
-                st.plotly_chart(chart(fr[entry], 150, f'{pair} {entry}', zones,
-                                      smc['pools'] if entry == 'H1' else (), smc['labels_h1'] if entry == 'H1' else (),
-                                      smc['events_h1'] if entry == 'H1' else (), smc['sweeps'] if entry == 'H1' else (),
-                                      levels), use_container_width=True)
+                if system == RANGE:
+                    fig = chart(fr['H1'], 150, f'{pair} H1 + Bollinger(20,2)', zones, levels=levels)
+                    ff = rs['f'].tail(150)
+                    for col, dash in (('bb_up', 'dash'), ('bb_lo', 'dash')):
+                        fig.add_trace(go.Scatter(x=ff.index, y=ff[col], mode='lines', line=dict(color='#9e9e9e', width=1, dash=dash)))
+                    fig.add_trace(go.Scatter(x=ff.index, y=(ff.bb_up + ff.bb_lo) / 2, mode='lines',
+                                             line=dict(color='#9e9e9e', width=1, dash='dot')))
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.plotly_chart(chart(fr[entry], 150, f'{pair} {entry}', zones,
+                                          smc['pools'] if entry == 'H1' else (), smc['labels_h1'] if entry == 'H1' else (),
+                                          smc['events_h1'] if entry == 'H1' else (), smc['sweeps'] if entry == 'H1' else (),
+                                          levels), use_container_width=True)
             with c2:
                 st.plotly_chart(chart(fr[other], 150, f'{pair} {other}', zones, levels=levels), use_container_width=True)
             with c3:
@@ -176,6 +246,35 @@ def render(KEY):
             st.error(f'ดึงข้อมูลไม่สำเร็จ: {e}')
 
     with tab_bt:
+        st.write('**🔄 สวิงในกรอบ (Bollinger + ADX)**')
+        st.caption('สูตร M2 จากห้องทดลอง ตัวเลขเดิมไม่ปรับ | TP 1R และ 1.5R | ข้อมูล H1 ~2.5 ปี')
+        if st.button('▶️ ทดสอบสวิงในกรอบ', use_container_width=True, key='fx_bt_range'):
+            try:
+                with st.spinner('กำลังจำลองเทรด ...'):
+                    d1, h4, h1 = history_cached(KEY, pair, pages)
+                    set_swap(float(h1.close.iloc[-1]))
+                    cache = L.features(d1, h4, h1)
+                    rsets = {f'สวิงในกรอบ TP {tp:g}R': L.run_model(pair, d1, h4, h1, 'M2', tp, cache=cache) for tp in (1.0, 1.5)}
+                    rtab = pd.DataFrame([F._row(k, v) for k, v in rsets.items()])
+                st.caption(f'ช่วงข้อมูล H1: {h1.index[0]:%d %b %Y} → {h1.index[-1]:%d %b %Y} (70% แรก = พัฒนา, 30% หลัง = ทดสอบ)')
+                st.dataframe(rtab, use_container_width=True, hide_index=True)
+                fig = go.Figure()
+                for label, t in rsets.items():
+                    if len(t):
+                        tt = t.sort_values('time')
+                        fig.add_trace(go.Scatter(x=tt.exit_time, y=tt.R_net.cumsum(), mode='lines', name=label))
+                fig.update_layout(height=300, margin=dict(l=0, r=0, t=30, b=0), legend=dict(orientation='h', y=-0.25),
+                                  title=dict(text='กำไรสะสม (R หักต้นทุน)', x=0))
+                st.plotly_chart(fig, use_container_width=True)
+                st.caption('เชื่อได้เมื่อ R สุทธิบวกทั้งช่วงพัฒนาและทดสอบ | ถ้าไม่ผ่านทั้งสองแบบ ไม่ควรเทรด EUR/USD ด้วยสูตรนี้')
+                for k, (label, t) in enumerate(rsets.items()):
+                    if len(t):
+                        st.download_button(f'ดาวน์โหลด CSV: {label}', t.to_csv(index=False), f'EURUSD_range_{k + 1}.csv',
+                                           key=f'fx_rdl_{k}')
+            except Exception as e:
+                st.error(f'ทดสอบไม่สำเร็จ: {e}')
+        st.divider()
+        st.write('**📏 SMA200 และ SMC (ผลเดิม: ขาดทุนทั้ง 3 แบบ)**')
         st.caption(f'ทดสอบ {pair} ด้วยกฎเดิมทุกตัวเลข (ไม่ปรับให้เข้ากับคู่เงิน) = ทดสอบข้ามตลาดของระบบทองและ BTC '
                    '| ข้อมูล H1 ~2.5 ปี | ครั้งแรกรอ 2-4 นาที')
         if st.button(f'▶️ ทดสอบ {pair}', use_container_width=True, key='fx_bt'):
