@@ -139,6 +139,8 @@ def run_model(symbol, d1, h4, h1, model, tp_r, cache=None):
             continue
         if symbol == 'XAU/USD' and S.gold_closed(idx[i]):
             continue
+        if symbol in S.FX and S.no_entry_time(symbol, idx[i] + pd.Timedelta(hours=1)):
+            continue                                     # Forex: ไม่เข้าช่วงตัดรอบ/ชั่วโมงสุดท้ายวันศุกร์/ตลาดปิด
         if intraday and (idx[i].hour >= S.NO_ENTRY_FROM_HOUR or f.date.values[i] in taken_days):
             continue
         if (tns[i + 1] - tns[i]) > 6 * 3_600_000_000_000:
