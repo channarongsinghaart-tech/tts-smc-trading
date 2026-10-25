@@ -170,8 +170,8 @@ def run(d1, h4, h1, sr=False, symbol=SYMBOL):
     for i in np.flatnonzero(sig != 0):
         if i < free or i >= len(idx) - 1 or (tns[i + 1] - tns[i]) > 6 * 3_600_000_000_000:
             continue
-        if symbol == 'XAU/USD' and (S.gold_closed(idx[i]) or S.no_entry_time(symbol, idx[i] + OFFSET['H1'])):
-            continue                                       # ทอง: ไม่เข้าตอนตลาดปิด/พัก และชั่วโมงสุดท้ายวันศุกร์
+        if (symbol == 'XAU/USD' and S.gold_closed(idx[i])) or S.no_entry_time(symbol, idx[i] + OFFSET['H1']):
+            continue                                       # ทอง/Forex: ไม่เข้าตอนตลาดปิด/พัก/ตัดรอบ และชั่วโมงสุดท้ายวันศุกร์
         s, rk = int(sig[i]), float(risk_arr[i])
         entry = float(h1p.close.values[i])
         j, px, why = S.simulate(h1p, i, s, rk, 'tp', z, z, MAX_HOLD_H, TP_R, False)
@@ -275,15 +275,20 @@ def liquidity_pools(df, sw, tol, lookback=120):
     return uniq
 
 
-def live():
-    d1 = core.fetch(SYMBOL, '1day', 300)
-    h4 = core.fetch(SYMBOL, '4h', 300)
-    h1 = core.fetch(SYMBOL, '1h', 300)
-    m15 = core.fetch(SYMBOL, '15min', 40)
+def live(symbol=SYMBOL, frames=None, price=None):
+    """frames = (d1, h4, h1) ที่ดึงมาแล้ว (ไม่ต้องดึงซ้ำ) | price = ราคาล่าสุด"""
+    if frames is None:
+        d1 = core.fetch(symbol, '1day', 300)
+        h4 = core.fetch(symbol, '4h', 300)
+        h1 = core.fetch(symbol, '1h', 300)
+        m15 = core.fetch(symbol, '15min', 40)
+        price = float(m15.close.iloc[-1]) if len(m15) else None
+    else:
+        d1, h4, h1 = (f[['open', 'high', 'low', 'close']] for f in frames)
     b = signals(d1, h4, h1, sr=False)
     bs = signals(d1, h4, h1, sr=True)
     h1p, h4p, d1p = b['h1p'], b['h4p'], b['d1p']
-    price = float(m15.close.iloc[-1]) if len(m15) else float(h1p.close.iloc[-1])
+    price = float(price) if price is not None else float(h1p.close.iloc[-1])
     atr4, atr1, atrd = float(h4p.ATR.iloc[-1]), float(h1p.ATR.iloc[-1]), float(d1p.ATR.iloc[-1])
     struct = {'D1': int(b['swd']['struct'][-1]), 'H4': int(b['sw4']['struct'][-1]), 'H1': int(b['sw1']['struct'][-1])}
     sma = {tf: int(df.side.iloc[-1]) for tf, df in (('D1', d1p), ('H4', h4p), ('H1', h1p))}
@@ -311,7 +316,7 @@ def live():
     for name, bb in (('S/R', bs), ('พื้นฐาน', b)):
         n = len(bb['h1p'])
         for i in range(n - 1, n - 1 - FRESH_BARS, -1):
-            if bb['sig'][i] != 0:
+            if bb['sig'][i] != 0 and not S.no_entry_time(symbol, bb['h1p'].index[i] + OFFSET['H1']):
                 s = int(bb['sig'][i]); e = float(bb['h1p'].close.values[i]); rk = float(bb['risk'][i])
                 signal = {'dir': s, 'time': bb['h1p'].index[i] + OFFSET['H1'], 'entry': e, 'sl': e - s * rk,
                           'tp': e + s * TP_R * rk, 'risk': rk, 'moved_R': s * (price - e) / rk, 'sr': name == 'S/R',
