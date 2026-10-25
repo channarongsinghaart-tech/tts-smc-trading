@@ -29,6 +29,7 @@ ACTIVE_START = os.getenv('ACTIVE_START', '04:00')
 ACTIVE_END = os.getenv('ACTIVE_END', '21:30')
 ACCOUNT_USD = float(os.getenv('ACCOUNT_USD', '0') or 0)
 RISK_PCT = float(os.getenv('RISK_PCT', '0.5') or 0.5)
+CONTRACT = float(os.getenv('CONTRACT_SIZE', '100') or 100)   # ออนซ์ต่อ 1 lot (XAUUSDm = 100, บัญชีเซ็นต์ดูในข้อมูลจำเพาะ)
 FRESH_MIN = 30
 MAX_MOVED_R = 0.5
 Q, H = pd.Timedelta(minutes=15), pd.Timedelta(hours=1)
@@ -45,8 +46,8 @@ def tstr(ts):
 
 def lot_text(risk):
     if ACCOUNT_USD <= 0:
-        return f'ขนาดไม้: lot = เงินที่ยอมเสีย ÷ ({risk:.2f} × 100)'
-    lot, money, real = F.lot_size(risk, ACCOUNT_USD, RISK_PCT)
+        return f'ขนาดไม้: lot = เงินที่ยอมเสีย ÷ ({risk:.2f} × {CONTRACT:g})'
+    lot, money, real = F.lot_size(risk, ACCOUNT_USD, RISK_PCT, CONTRACT)
     if lot < 0.01:
         return (f'⚠️ ทุน {ACCOUNT_USD:,.0f} USD เสี่ยง {RISK_PCT}% = {money:.2f} USD แต่ไม้ขั้นต่ำ 0.01 lot '
                 f'เสี่ยงราว {real:.2f} USD ({real / ACCOUNT_USD * 100:.1f}% ของทุน เกินแผน)')
