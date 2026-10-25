@@ -13,7 +13,7 @@ import swinglab as L
 import btc_smc as B
 
 st.set_page_config(page_title='ทอง & BTC', page_icon='🥇', layout='centered')
-PAGE = st.radio('เลือกสินทรัพย์', ['🥇 ทอง', '₿ BTC'], horizontal=True, label_visibility='collapsed', key='page')
+PAGE = st.radio('เลือกสินทรัพย์', ['🥇 ทอง', '₿ BTC', '💶 EUR/USD'], horizontal=True, label_visibility='collapsed', key='page')
 
 
 def get_key():
@@ -39,6 +39,10 @@ if PAGE.startswith('₿'):
     import btc_page
     btc_page.render(KEY)
     st.stop()
+if PAGE.startswith('💶'):
+    import fx_page
+    fx_page.render(KEY)
+    st.stop()
 
 st.title('🥇 ทอง SMA200 หลายกรอบ')
 
@@ -49,6 +53,8 @@ with st.expander('⚙️ ตั้งค่า (กรอบจุดเข้�
     tz_name = st.selectbox('เขตเวลาของคุณ', ['America/Edmonton', 'Asia/Bangkok', 'UTC'])
     account = st.number_input('ทุนในบัญชี (USD) ใช้คำนวณขนาดไม้', value=5000.0, step=500.0)
     risk_pct = st.number_input('เสี่ยงต่อไม้ (% ของทุน)', value=0.5, step=0.1, format='%.2f')
+    gold_ct = st.number_input('ขนาดสัญญาทอง (ออนซ์ต่อ 1 lot) XAUUSDm = 100 | บัญชีเซ็นต์ XAUUSDc ดูในข้อมูลจำเพาะ',
+                              value=100.0, step=1.0)
     sp_xau = st.number_input('สเปรดทอง (หน่วยราคา)', value=0.30, step=0.05)
     sp_btc = st.number_input('สเปรด BTC (หน่วยราคา)', value=6.4, step=0.5)
     sw_xau_l = st.number_input('ค่าข้ามคืนทอง ฝั่งซื้อ (% ต่อคืน)', value=0.0124, step=0.001, format='%.4f')
@@ -155,7 +161,7 @@ with tab_now:
             entry = sig['entry'] if sig is not None else res['price']
             risk = sig['risk'] if sig is not None else res['risk']
             sl, tp = entry - s * risk, entry + s * F.TP_R * risk
-            lot, money, real = F.lot_size(risk, account, risk_pct) if SYM == 'XAU/USD' else (None, None, None)
+            lot, money, real = F.lot_size(risk, account, risk_pct, gold_ct) if SYM == 'XAU/USD' else (None, None, None)
             title = 'แผนเทรดของสัญญาณนี้' if sig is not None else f'ถ้าเกิดสัญญาณ{side_txt[s]}ที่ราคาตอนนี้'
             plan = [f'**{title}**', f'- ราคาเข้า: **{core.fmt(entry)}**', f'- SL: **{core.fmt(sl)}** (ห่าง {core.fmt(risk)})',
                     f'- TP 2R: **{core.fmt(tp)}**']
