@@ -23,13 +23,16 @@ MAX_HOLD_H1 = 24 * 15         # ถือนานสุด 15 วัน
 TEST_FRAC = 0.3               # 30% ท้ายของช่วงเวลาเก็บไว้ทดสอบ
 ROLLOVER_BAR_HOUR = 20        # โหมดไม่ข้ามคืน: ปิดตอนแท่ง H1 20:00-21:00 UTC ปิด (ก่อนตัดรอบ swap)
 NO_ENTRY_FROM_HOUR = 18       # โหมดไม่ข้ามคืน: ไม่เปิดไม้ใหม่ตั้งแต่แท่ง 18:00 UTC
-SPREAD = {'BTC/USD': 6.4, 'XAU/USD': 0.30}
+SPREAD = {'BTC/USD': 6.4, 'XAU/USD': 0.30, 'EUR/USD': 0.00012, 'EUR/AUD': 0.00025}
+FX = ('EUR/USD', 'EUR/AUD')
 # ค่าข้ามคืน (% ของราคาต่อคืน) แยกฝั่งซื้อ/ขาย ค่าบวก = เสียเงิน (ใส่ตามโบรกเกอร์)
 # ทอง Exness (XAUUSDm, ต.ค. 2026): Swap long -515.5 จุด = 0.5155 USD/oz ต่อคืน ≈ 0.0124% ของราคา, Swap short 0
-SWAP_PCT_DAY = {'BTC/USD': {'LONG': 0.0, 'SHORT': 0.0}, 'XAU/USD': {'LONG': 0.0124, 'SHORT': 0.0}}
+SWAP_PCT_DAY = {'BTC/USD': {'LONG': 0.0, 'SHORT': 0.0}, 'XAU/USD': {'LONG': 0.0124, 'SHORT': 0.0},
+                'EUR/USD': {'LONG': 0.0, 'SHORT': 0.0}, 'EUR/AUD': {'LONG': 0.0066, 'SHORT': 0.0}}
 ROLLOVER_HOUR_UTC = 21        # เวลาตัดรอบคิด swap (โดยประมาณ)
 # จำนวนเท่าที่คิด swap ในแต่ละคืน จันทร์..อาทิตย์ (ทองตามตาราง Exness: พุธ 3 เท่า, เสาร์-อาทิตย์ไม่คิด)
-SWAP_DAYS = {'XAU/USD': (1, 1, 3, 1, 1, 0, 0), 'BTC/USD': (1, 1, 1, 1, 1, 1, 1)}
+SWAP_DAYS = {'XAU/USD': (1, 1, 3, 1, 1, 0, 0), 'BTC/USD': (1, 1, 1, 1, 1, 1, 1),
+             'EUR/USD': (1, 1, 3, 1, 1, 0, 0), 'EUR/AUD': (1, 1, 3, 1, 1, 0, 0)}
 
 
 def rollover_units(symbol, t_in, t_out):
@@ -135,12 +138,24 @@ def context(d1p, h4p, h1p):
     return {'dist_d1': dist_d1, 'slope_h4': slope_h4, 'adx_h4': adx4[hi_]}
 
 
+def fx_closed(ts):
+    """ตลาด Forex ปิด: ศุกร์หลัง 20:59 UTC ถึงอาทิตย์ 21:05 UTC"""
+    dow, hm = ts.dayofweek, ts.hour * 60 + ts.minute
+    return dow == 5 or (dow == 6 and hm < 21 * 60 + 5) or (dow == 4 and hm >= 20 * 60 + 59)
+
+
 def no_entry_time(symbol, close_t):
     """ช่วงที่เปิดไม้ทองจริงไม่ได้/ไม่ควรเปิด (close_t = เวลาปิดแท่ง): พักตลาด 20:58-22:00 UTC,
     ชั่วโมงสุดท้ายก่อนปิดวันศุกร์ และช่วงตลาดปิด"""
+    hm = close_t.hour * 60 + close_t.minute
+    if symbol in FX:                                   # Forex: ช่วงตัดรอบรายวัน (สเปรดกว้าง) วันศุกร์ชั่วโมงสุดท้าย ตลาดปิด
+        if 20 * 60 + 45 <= hm < 22 * 60:
+            return True
+        if close_t.dayofweek == 4 and hm >= 20 * 60:
+            return True
+        return fx_closed(close_t - pd.Timedelta(minutes=1))
     if symbol != 'XAU/USD':
         return False
-    hm = close_t.hour * 60 + close_t.minute
     if 20 * 60 + 58 <= hm < 22 * 60:
         return True
     if close_t.dayofweek == 4 and hm >= 20 * 60:
